@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Lab 3 — Chatbot vs Agent Demo</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header>
+    <h1>Chatbot vs ReAct Agent</h1>
+    <p class="subtitle">Product catalog · <a href="https://dummyjson.com/products" target="_blank">dummyjson.com</a></p>
+    <div class="mode-bar">
+      <span id="modeBadge" class="badge simulate">Simulate</span>
+      <label class="toggle">
+        <input type="checkbox" id="liveToggle" />
+        Live LLM (needs API key)
+      </label>
+    </div>
+  </header>
+
+  <section class="scenarios">
+    <h2>Scenarios</h2>
+    <div id="scenarioChips" class="chips"></div>
+    <p id="scenarioExpect" class="expect"></p>
+  </section>
+
+  <section class="query-row">
+    <textarea id="queryInput" rows="2" placeholder="Ask about products…"></textarea>
+    <button id="runBtn" type="button">Run comparison</button>
+  </section>
+
+  <div id="loading" class="loading hidden">Running…</div>
+
+  <section id="evaluationSummary" class="evaluation-summary hidden">
+    <h2>Token &amp; cost evaluation</h2>
+    <p id="evaluationTotals" class="eval-totals"></p>
+    <table class="eval-table">
+      <thead>
+        <tr>
+          <th>Mode</th>
+          <th>LLM calls</th>
+          <th>Prompt</th>
+          <th>Completion</th>
+          <th>Total tokens</th>
+          <th>Latency</th>
+          <th>Est. cost</th>
+        </tr>
+      </thead>
+      <tbody id="evaluationTableBody"></tbody>
+    </table>
+  </section>
+
+  <main class="columns">
+    <article class="panel baseline" data-mode="baseline">
+      <header>
+        <h3>① Baseline chatbot</h3>
+        <span class="tag risk">No tools · may hallucinate facts</span>
+      </header>
+      <div class="meta"></div>
+      <div class="answer"></div>
+      <div class="trace-wrap hidden">
+        <h4>Trace</h4>
+        <ol class="trace"></ol>
+      </div>
+    </article>
+
+    <article class="panel tool-aware" data-mode="tool_aware">
+      <header>
+        <h3>② Tool-aware chatbot</h3>
+        <span class="tag warn">Tools in prompt only · fake observations</span>
+      </header>
+      <div class="meta"></div>
+      <div class="answer"></div>
+      <div class="trace-wrap hidden">
+        <h4>Trace</h4>
+        <ol class="trace"></ol>
+      </div>
+    </article>
+
+    <article class="panel agent" data-mode="agent">
+      <header>
+        <h3>③ ReAct agent v1</h3>
+        <span class="tag ok">Tool loop · basic recovery</span>
+      </header>
+      <div class="meta"></div>
+      <div class="answer"></div>
+      <div class="trace-wrap">
+        <h4>Thought → Action → Observation</h4>
+        <ol class="trace"></ol>
+      </div>
+    </article>
+
+    <article class="panel agent-v2" data-mode="agent_v2">
+      <header>
+        <h3>④ ReAct agent v2</h3>
+        <span class="tag ok">Images + failure detection / avoidance</span>
+      </header>
+      <div class="meta"></div>
+      <div class="answer answer-md"></div>
+      <div class="trace-wrap">
+        <h4>Trace + failures</h4>
+        <ol class="trace"></ol>
+      </div>
+    </article>
+  </main>
+
+  <footer>
+    <p>Simulate mode uses canned traces in <code>web/mock_traces.json</code>. Live mode calls your configured provider.</p>
+  </footer>
+  <script src="/app.js"></script>
+</body>
+</html>

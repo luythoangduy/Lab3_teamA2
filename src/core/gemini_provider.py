@@ -24,12 +24,19 @@ class GeminiProvider(LLMProvider):
         end_time = time.time()
         latency_ms = int((end_time - start_time) * 1000)
 
-        # Gemini usage data is in response.usage_metadata
-        content = response.text
+        content = self._extract_text(response)
+        if not content:
+            finish_reason = self._finish_reason(response)
+            content = (
+                "Gemini did not return a text response"
+                + (f" (finish_reason={finish_reason})." if finish_reason is not None else ".")
+            )
+
+        usage_metadata = getattr(response, "usage_metadata", None)
         usage = {
-            "prompt_tokens": response.usage_metadata.prompt_token_count,
-            "completion_tokens": response.usage_metadata.candidates_token_count,
-            "total_tokens": response.usage_metadata.total_token_count
+            "prompt_tokens": getattr(usage_metadata, "prompt_token_count", 0),
+            "completion_tokens": getattr(usage_metadata, "candidates_token_count", 0),
+            "total_tokens": getattr(usage_metadata, "total_token_count", 0)
         }
 
         return {
@@ -46,4 +53,29 @@ class GeminiProvider(LLMProvider):
 
         response = self.model.generate_content(full_prompt, stream=True)
         for chunk in response:
-            yield chunk.text
+            text = self._extract_text(chunk)
+            if text:
+                yield text
+
+    @staticmethod
+    def _extract_text(response: Any) -> str:
+        parts = []
+        for candidate in getattr(response, "candidates", []) or []:
+            content = getattr(candidate, "content", None)
+            for part in getattr(content, "parts", []) or []:
+                text = getattr(part, "text", None)
+                if text:
+                    parts.append(text)
+        if parts:
+            return "".join(parts).strip()
+        try:
+            return response.text.strip()
+        except (AttributeError, ValueError):
+            return ""
+
+    @staticmethod
+    def _finish_reason(response: Any) -> Any:
+        candidates = getattr(response, "candidates", []) or []
+        if not candidates:
+            return None
+        return getattr(candidates[0], "finish_reason", None)
