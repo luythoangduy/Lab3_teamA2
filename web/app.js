@@ -18,13 +18,30 @@ async function init() {
     fetch("/api/scenarios"),
     fetch("/api/config"),
   ]);
-  scenarios = await scRes.json();
-  const cfg = await cfgRes.json();
+  scenarios = await readJson(scRes, "/api/scenarios");
+  const cfg = await readJson(cfgRes, "/api/config");
   liveLlm = cfg.live_llm;
   $("#liveToggle").checked = liveLlm;
   updateModeBadge();
   renderChips();
   selectScenario(1);
+}
+
+async function readJson(res, label) {
+  const contentType = res.headers.get("content-type") || "";
+  const text = await res.text();
+  let data = null;
+  if (contentType.includes("application/json")) {
+    data = text ? JSON.parse(text) : {};
+  } else {
+    const preview = text.replace(/\s+/g, " ").slice(0, 160);
+    throw new Error(`${label} returned non-JSON (${res.status}). ${preview}`);
+  }
+
+  if (!res.ok) {
+    throw new Error(data.error || data.detail || `${label} failed with ${res.status}`);
+  }
+  return data;
 }
 
 function updateModeBadge() {
@@ -216,11 +233,7 @@ async function runComparison() {
         simulate: !$("#liveToggle").checked,
       }),
     });
-    const data = await res.json();
-    if (!res.ok) {
-      alert(data.error || "Request failed");
-      return;
-    }
+    const data = await readJson(res, "/api/compare");
     renderPanel($('.panel[data-mode="baseline"]'), data.baseline);
     renderPanel($('.panel[data-mode="tool_aware"]'), data.tool_aware);
     renderPanel($('.panel[data-mode="agent"]'), data.agent);
@@ -252,4 +265,10 @@ $("#liveToggle").addEventListener("change", () => {
   updateModeBadge();
 });
 
-init();
+init().catch((e) => {
+  alert(
+    "Cannot load web demo API: " +
+      e.message +
+      "\n\nRun it with: py web_demo.py, then open http://127.0.0.1:5000"
+  );
+});
