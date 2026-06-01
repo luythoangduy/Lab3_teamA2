@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 from src.agent.agent import ReActAgent
 from src.agent.agent_v2 import ReActAgentV2
 from src.tools.product_tools import create_product_tools
+from src.telemetry.metrics import tracker
 
 
 def build_provider():
@@ -47,6 +48,14 @@ def main() -> None:
         result = agent.run(user_input)
         answer = result.get("answer", result) if isinstance(result, dict) else result
         print(f"\nAssistant:\n{answer}")
+        if tracker.session_metrics:
+            last = tracker.session_metrics[-1]
+            cost = last.get("cost_estimate", 0.0)
+            t_tok = last.get("total_tokens", 0)
+            p_tok = last.get("prompt_tokens", 0)
+            c_tok = last.get("completion_tokens", 0)
+            lat = last.get("latency_ms", 0)
+            print(f"\n💡 [Metrics] Latency: {lat}ms | Cost: ${cost:.6f} USD | Tokens: {t_tok} (Prompt: {p_tok}, Completion: {c_tok})")
         if isinstance(result, dict) and result.get("failures"):
             print(f"\n[Failures detected: {len(result['failures'])} — see logs/]")
 
