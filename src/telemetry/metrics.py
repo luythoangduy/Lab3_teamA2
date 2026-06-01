@@ -55,6 +55,73 @@ class PerformanceTracker:
 
         return input_cost + output_cost
 
+
+def estimate_cost_usd(model: str, usage: Dict[str, int]) -> float:
+    """Public helper for cost estimates (USD)."""
+    return PerformanceTracker()._calculate_cost(model, usage)
+
+
+def build_run_metrics(
+    provider: str,
+    model: str,
+    usage: Dict[str, int],
+    latency_ms: int,
+    llm_calls: int = 1,
+    simulated: bool = False,
+) -> Dict[str, Any]:
+    """Standard metrics block returned by chatbot/agent runs and shown in the web UI."""
+    prompt_tokens = int(usage.get("prompt_tokens", 0))
+    completion_tokens = int(usage.get("completion_tokens", 0))
+    total_tokens = int(usage.get("total_tokens", 0) or prompt_tokens + completion_tokens)
+    normalized_usage = {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+    }
+    cost_usd = estimate_cost_usd(model, normalized_usage)
+    return {
+        "provider": provider,
+        "model": model,
+        "llm_calls": llm_calls,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+        "latency_ms": int(latency_ms),
+        "cost_usd": round(cost_usd, 6),
+        "simulated": simulated,
+    }
+
+
+def build_comparison_evaluation(mode_results: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """Aggregate token/cost totals across baseline → agent_v2 for one scenario run."""
+    rows = []
+    total_tokens = 0
+    total_cost = 0.0
+    total_latency = 0
+    total_llm_calls = 0
+
+    for mode, result in mode_results.items():
+        metrics = (result or {}).get("metrics") or {}
+        rows.append({"mode": mode, **metrics})
+        total_tokens += int(metrics.get("total_tokens", 0))
+        total_cost += float(metrics.get("cost_usd", 0))
+        total_latency += int(metrics.get("latency_ms", 0))
+        total_llm_calls += int(metrics.get("llm_calls", 0))
+
+    simulated = bool(rows) and all(r.get("simulated", False) for r in rows)
+
+    return {
+        "simulated": simulated,
+        "per_mode": rows,
+        "totals": {
+            "llm_calls": total_llm_calls,
+            "total_tokens": total_tokens,
+            "latency_ms": total_latency,
+            "cost_usd": round(total_cost, 6),
+        },
+    }
+
+
 # Global tracker instance
 tracker = PerformanceTracker()
 

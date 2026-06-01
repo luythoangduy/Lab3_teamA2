@@ -92,6 +92,13 @@ function renderPanel(panelEl, data) {
   info.textContent = line;
   meta.appendChild(info);
 
+  if (payload.metrics) {
+    const m = document.createElement("div");
+    m.className = "metrics";
+    m.innerHTML = formatMetricsHtml(payload.metrics);
+    meta.appendChild(m);
+  }
+
   const answerText = payload.answer || "(no answer)";
   if (panelEl.querySelector(".answer-md") && answerText.includes("![")) {
     answer.innerHTML = renderMarkdownImages(answerText);
@@ -128,6 +135,60 @@ function escapeHtml(s) {
   return d.innerHTML;
 }
 
+function formatMetricsHtml(m) {
+  const sim = m.simulated ? ' <span class="sim-tag">simulate</span>' : "";
+  const cost =
+    m.cost_usd != null
+      ? `$${Number(m.cost_usd).toFixed(6)}`
+      : "—";
+  return (
+    `<strong>Tokens / cost</strong>${sim}<br>` +
+    `Calls: ${m.llm_calls ?? 0} · ` +
+    `Prompt: ${m.prompt_tokens ?? 0} · ` +
+    `Completion: ${m.completion_tokens ?? 0} · ` +
+    `Total: ${m.total_tokens ?? 0}<br>` +
+    `Latency: ${m.latency_ms ?? 0} ms · Est. cost: ${cost}`
+  );
+}
+
+function renderEvaluationSummary(evaluation, simulate) {
+  const section = $("#evaluationSummary");
+  const tbody = $("#evaluationTableBody");
+  if (!evaluation || !evaluation.per_mode) {
+    section.classList.add("hidden");
+    return;
+  }
+  section.classList.remove("hidden");
+  const t = evaluation.totals || {};
+  const simNote = simulate || evaluation.simulated ? " (simulated estimates)" : " (live API usage)";
+  $("#evaluationTotals").textContent =
+    `Totals${simNote}: ${t.llm_calls ?? 0} LLM calls · ` +
+    `${t.total_tokens ?? 0} tokens · ` +
+    `${t.latency_ms ?? 0} ms · ` +
+    `$${Number(t.cost_usd ?? 0).toFixed(6)} USD`;
+
+  tbody.innerHTML = "";
+  const labels = {
+    baseline: "① Baseline",
+    tool_aware: "② Tool-aware",
+    agent: "③ Agent v1",
+    agent_v2: "④ Agent v2",
+  };
+  evaluation.per_mode.forEach((row) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${labels[row.mode] || row.mode}</td>
+      <td>${row.llm_calls ?? 0}</td>
+      <td>${row.prompt_tokens ?? 0}</td>
+      <td>${row.completion_tokens ?? 0}</td>
+      <td>${row.total_tokens ?? 0}</td>
+      <td>${row.latency_ms ?? 0} ms</td>
+      <td>$${Number(row.cost_usd ?? 0).toFixed(6)}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
 function renderMarkdownImages(text) {
   const escaped = escapeHtml(text);
   return escaped.replace(
@@ -143,6 +204,7 @@ async function runComparison() {
   $("#runBtn").disabled = true;
   $("#loading").classList.remove("hidden");
   clearPanels();
+  $("#evaluationSummary").classList.add("hidden");
 
   try {
     const res = await fetch("/api/compare", {
@@ -163,6 +225,7 @@ async function runComparison() {
     renderPanel($('.panel[data-mode="tool_aware"]'), data.tool_aware);
     renderPanel($('.panel[data-mode="agent"]'), data.agent);
     renderPanel($('.panel[data-mode="agent_v2"]'), data.agent_v2 || EMPTY_PANEL);
+    renderEvaluationSummary(data.evaluation, data.simulate);
   } catch (e) {
     alert("Network error: " + e.message);
   } finally {

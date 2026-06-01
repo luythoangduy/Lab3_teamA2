@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional
 
 from src.core.llm_provider import LLMProvider
 from src.telemetry.logger import logger
-from src.telemetry.metrics import tracker
+from src.telemetry.metrics import build_run_metrics, tracker
 from src.tools.product_tools import PRODUCT_TOOLS
 
 
@@ -57,11 +57,13 @@ Final Answer: your final response.
         steps = 0
         total_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         total_latency = 0
+        llm_calls = 0
         final_answer: Optional[str] = None
         provider = "unknown"
 
         while steps < self.max_steps:
             result = self.llm.generate(transcript, system_prompt=self.get_system_prompt())
+            llm_calls += 1
             content = result.get("content", "").strip()
             provider = result.get("provider", provider)
             total_latency += result.get("latency_ms", 0)
@@ -105,8 +107,11 @@ Final Answer: your final response.
             final_answer = "I could not complete the request within the step limit."
             logger.log_event("TIMEOUT", {"steps": steps})
 
+        metrics = build_run_metrics(
+            provider, self.llm.model_name, total_usage, total_latency, llm_calls=llm_calls
+        )
         tracker.track_request(provider, self.llm.model_name, total_usage, total_latency)
-        logger.log_event("AGENT_END", {"steps": steps, "version": "v1"})
+        logger.log_event("AGENT_END", {"steps": steps, "version": "v1", "metrics": metrics})
         self.history.append({"user": user_input, "assistant": final_answer})
 
         return {
@@ -116,6 +121,7 @@ Final Answer: your final response.
             "steps": steps,
             "trace": trace,
             "failures": [],
+            "metrics": metrics,
         }
 
     def _execute_tool(self, tool_name: str, args: str) -> str:

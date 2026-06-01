@@ -32,6 +32,25 @@
 
   <div id="loading" class="loading hidden">Running…</div>
 
+  <section id="evaluationSummary" class="evaluation-summary hidden">
+    <h2>Token &amp; cost evaluation</h2>
+    <p id="evaluationTotals" class="eval-totals"></p>
+    <table class="eval-table">
+      <thead>
+        <tr>
+          <th>Mode</th>
+          <th>LLM calls</th>
+          <th>Prompt</th>
+          <th>Completion</th>
+          <th>Total tokens</th>
+          <th>Latency</th>
+          <th>Est. cost</th>
+        </tr>
+      </thead>
+      <tbody id="evaluationTableBody"></tbody>
+    </table>
+  </section>
+
   <main class="columns">
     <article class="panel baseline" data-mode="baseline">
       <header>

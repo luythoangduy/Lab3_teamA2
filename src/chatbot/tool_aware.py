@@ -6,7 +6,7 @@ from typing import Any, Dict, List
 
 from src.core.llm_provider import LLMProvider
 from src.telemetry.logger import logger
-from src.telemetry.metrics import tracker
+from src.telemetry.metrics import build_run_metrics, tracker
 from src.tools.product_tools import PRODUCT_TOOLS
 
 
@@ -34,6 +34,13 @@ class ToolAwareChatbot:
             result.get("latency_ms", 0),
         )
         logger.log_event("CHATBOT_END", {"mode": "tool_aware_no_execution"})
+        metrics = build_run_metrics(
+            result.get("provider", "unknown"),
+            self.llm.model_name,
+            result.get("usage", {}),
+            result.get("latency_ms", 0),
+            llm_calls=1,
+        )
         return {
             "answer": result["content"],
             "mode": "tool_aware_chatbot",
@@ -41,5 +48,6 @@ class ToolAwareChatbot:
             "steps": 1,
             "trace": [],
             "note": "Tools described in prompt only; no real tool execution happened",
+            "metrics": metrics,
         }
 

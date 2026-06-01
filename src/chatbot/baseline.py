@@ -3,7 +3,7 @@ from typing import Any, Dict
 
 from src.core.llm_provider import LLMProvider
 from src.telemetry.logger import logger
-from src.telemetry.metrics import tracker
+from src.telemetry.metrics import build_run_metrics, tracker
 
 
 class BaselineChatbot:
@@ -28,10 +28,18 @@ class BaselineChatbot:
             result.get("latency_ms", 0),
         )
         logger.log_event("CHATBOT_END", {"mode": "baseline_no_tools"})
+        metrics = build_run_metrics(
+            result.get("provider", "unknown"),
+            self.llm.model_name,
+            result.get("usage", {}),
+            result.get("latency_ms", 0),
+            llm_calls=1,
+        )
         return {
             "answer": result["content"],
             "mode": "baseline",
             "used_tools": False,
             "steps": 1,
             "trace": [],
+            "metrics": metrics,
         }
