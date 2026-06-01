@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional
 from src.core.llm_provider import LLMProvider
 from src.telemetry.logger import logger
 from src.telemetry.metrics import tracker
-from src.tools.product_tools import PRODUCT_TOOLS, execute_tool
+from src.tools.product_tools import PRODUCT_TOOLS, create_product_tools
 
 
 class ReActAgent:
@@ -19,95 +19,90 @@ class ReActAgent:
         self.llm = llm
         self.tools = tools or PRODUCT_TOOLS
         self.max_steps = max_steps
-        self.history: List[str] = []
+        self.history: List[Dict[str, str]] = []
 
     def get_system_prompt(self) -> str:
         tool_descriptions = "\n".join(
             f"- {t['name']}: {t['description']}" for t in self.tools
         )
-        return f"""You are a product catalog assistant. Data comes ONLY from tools — never invent prices or stock.
+        return f"""You are an intelligent shopping assistant that can chat naturally and use tools when product data is needed.
 
 Available tools:
 {tool_descriptions}
 
-Respond using EXACTLY this format (one block per turn):
-Thought: brief reasoning
-Action: tool_name(argument)
-OR when done:
-Thought: brief reasoning
-Final Answer: concise answer for the user
+If the user asks about products, prices, categories, stock, or recommendations, use a product tool.
+Product results may include Markdown image syntax when the tool returns it.
+Never show more than 5 products in one answer.
+Data must come from tools — never invent prices, stock, or product names.
 
-Rules:
-- Use tool_name(argument) with a single string or integer argument in parentheses.
-- After you write Action, stop and wait for Observation (do not invent observations).
-- If a product is not in the catalog, say so in Final Answer.
-- For multi-step questions, call tools one at a time."""
+When you need a tool, use exactly this format:
+Thought: your line of reasoning.
+Action: tool_name({{"query": "text", "limit": 5}})
+
+After an Observation, either call another tool or finish with:
+Final Answer: your final response.
+
+If no tool is needed, answer directly with:
+Final Answer: your final response.
+"""
 
     def run(self, user_input: str) -> Dict[str, Any]:
         logger.log_event("AGENT_START", {"input": user_input, "model": self.llm.model_name})
 
-        scratchpad = f"Question: {user_input}\n"
+        transcript = f"User: {user_input}"
         trace: List[Dict[str, str]] = []
         steps = 0
-        final_answer = None
+        final_answer: Optional[str] = None
         total_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         total_latency = 0
+        last_provider = "unknown"
 
         while steps < self.max_steps:
-            prompt = scratchpad + "\nWhat is your next step?"
-            result = self.llm.generate(prompt, system_prompt=self.get_system_prompt())
-            content = result.get("content", "")
+            result = self.llm.generate(transcript, system_prompt=self.get_system_prompt())
+            content = result.get("content", "").strip()
+            last_provider = result.get("provider", "unknown")
             total_latency += result.get("latency_ms", 0)
             for key in total_usage:
                 total_usage[key] += result.get("usage", {}).get(key, 0)
 
-            thought = self._extract_line(content, "Thought")
-            action = self._parse_action(content)
-            final = self._extract_line(content, "Final Answer", rest_of_message=True)
+            logger.log_event("AGENT_LLM_RESPONSE", {"step": steps + 1, "content": content[:500]})
 
+            thought = self._extract_line(content, "Thought")
             if thought:
                 trace.append({"type": "thought", "content": thought})
-                scratchpad += f"\nThought: {thought}"
 
-            if final:
-                final_answer = final
+            final_answer = self._parse_final_answer(content)
+            if final_answer:
                 trace.append({"type": "final_answer", "content": final_answer})
-                scratchpad += f"\nFinal Answer: {final_answer}"
                 break
 
-            if action:
-                tool_name, args = action
-                trace.append({"type": "action", "content": f"{tool_name}({args})"})
-                scratchpad += f"\nAction: {tool_name}({args})"
-
-                observation = execute_tool(tool_name, args)
-                if "HALLUCINATED_TOOL" in observation:
-                    logger.log_event("HALLUCINATION_ERROR", {"tool": tool_name})
-                trace.append({"type": "observation", "content": observation})
-                scratchpad += f"\nObservation: {observation}"
-            else:
-                # Unparseable output — nudge model
-                err = "Could not parse Action or Final Answer. Use the required format."
+            action = self._parse_action(content)
+            if not action:
                 trace.append({"type": "parse_error", "content": content[:500]})
-                scratchpad += f"\nObservation: {err}"
                 logger.log_event("PARSE_ERROR", {"raw": content[:300]})
+                final_answer = content
+                break
 
+            tool_name, args = action
+            trace.append({"type": "action", "content": f"{tool_name}({args})"})
+            observation = self._execute_tool(tool_name, args)
+            if "not found" in observation.lower() or "HALLUCINATED" in observation:
+                logger.log_event("HALLUCINATION_ERROR", {"tool": tool_name})
+            trace.append({"type": "observation", "content": observation[:2000]})
+            logger.log_event(
+                "AGENT_TOOL_OBSERVATION",
+                {"step": steps + 1, "tool": tool_name, "args": args, "observation": observation[:500]},
+            )
+            transcript = f"{transcript}\n\nAssistant:\n{content}\nObservation: {observation}"
             steps += 1
 
         if final_answer is None:
-            final_answer = (
-                "I could not finish within the step limit. "
-                "See trace in logs for partial reasoning."
-            )
+            final_answer = "I could not complete the request within the step limit."
             logger.log_event("TIMEOUT", {"steps": steps})
 
-        tracker.track_request(
-            result.get("provider", "unknown") if steps else "unknown",
-            self.llm.model_name,
-            total_usage,
-            total_latency,
-        )
-        logger.log_event("AGENT_END", {"steps": steps, "success": final_answer is not None})
+        tracker.track_request(last_provider, self.llm.model_name, total_usage, total_latency)
+        logger.log_event("AGENT_END", {"steps": steps})
+        self.history.append({"user": user_input, "assistant": final_answer})
 
         return {
             "answer": final_answer,
@@ -117,19 +112,42 @@ Rules:
             "trace": trace,
         }
 
-    @staticmethod
-    def _extract_line(text: str, label: str, rest_of_message: bool = False) -> Optional[str]:
-        pattern = (
-            rf"{label}:\s*(.+)$"
-            if rest_of_message
-            else rf"{label}:\s*(.+?)(?=\n(?:Thought|Action|Final Answer|Observation):|\Z)"
+    def _execute_tool(self, tool_name: str, args: str) -> str:
+        for tool in self.tools:
+            if tool["name"] == tool_name:
+                tool_fn = tool.get("function")
+                if not callable(tool_fn):
+                    return f"Tool {tool_name} has no callable function."
+                try:
+                    return str(tool_fn(args))
+                except Exception as exc:
+                    logger.log_event("AGENT_TOOL_ERROR", {"tool": tool_name, "error": str(exc)})
+                    return f"Tool {tool_name} failed: {exc}"
+        return (
+            '{"error": "HALLUCINATED_TOOL", "message": "Tool \''
+            + tool_name
+            + "' does not exist\"}"
         )
-        match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
-        return match.group(1).strip() if match else None
 
     @staticmethod
-    def _parse_action(text: str) -> Optional[tuple]:
-        match = re.search(r"Action:\s*(\w+)\(([^)]*)\)", text, re.IGNORECASE)
-        if match:
-            return match.group(1), match.group(2).strip()
-        return None
+    def _parse_action(content: str) -> Optional[tuple]:
+        match = re.search(r"Action:\s*([a-zA-Z_][\w]*)\s*\((.*)\)\s*$", content, re.DOTALL)
+        if not match:
+            return None
+        return match.group(1), match.group(2).strip()
+
+    @staticmethod
+    def _parse_final_answer(content: str) -> Optional[str]:
+        match = re.search(r"Final Answer:\s*(.*)", content, re.DOTALL)
+        if not match:
+            return None
+        return match.group(1).strip()
+
+    @staticmethod
+    def _extract_line(text: str, label: str) -> Optional[str]:
+        match = re.search(
+            rf"{label}:\s*(.+?)(?=\n(?:Thought|Action|Final Answer|Observation):|\Z)",
+            text,
+            re.IGNORECASE | re.DOTALL,
+        )
+        return match.group(1).strip() if match else None

@@ -1,3 +1,17 @@
-from src.tools.product_tools import PRODUCT_TOOLS, execute_tool
+"""Tool implementations used by the ReAct agent."""
 
-__all__ = ["PRODUCT_TOOLS", "execute_tool"]
+from src.tools.product_tools import (
+    PRODUCT_TOOLS,
+    ProductCatalog,
+    create_product_tools,
+    execute_tool,
+    refresh_cache,
+)
+
+__all__ = [
+    "PRODUCT_TOOLS",
+    "ProductCatalog",
+    "create_product_tools",
+    "execute_tool",
+    "refresh_cache",
+]

@@ -23,7 +23,7 @@ from src.chatbot.baseline import BaselineChatbot
 from src.chatbot.tool_aware import ToolAwareChatbot
 from src.core.factory import get_llm_provider
 from src.demo.scenarios import SCENARIOS
-from src.tools.product_tools import refresh_cache
+from src.tools import refresh_cache
 
 
 def print_block(title: str, result: dict) -> None:

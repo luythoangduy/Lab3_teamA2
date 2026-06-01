@@ -73,4 +73,29 @@ The code is designed as a **Production Prototype**. It includes:
 
 ---
 
+## Product Shopping Agent
+
+This branch includes a retail product agent powered by the public DummyJSON Products API:
+
+- Chat naturally with the user.
+- Fetch product data from `https://dummyjson.com/products`.
+- Store the catalog in local SQLite at `data/products.sqlite3`.
+- Use read-only SQL for product queries.
+- Map heuristic requests like `looks young` to bright colors and `garment for woman` to women's fashion terms.
+- Return at most 5 products with Markdown images inside the chat response.
+
+Run it:
+
+```bash
+python -m src.product_chat
+```
+
+Example prompts:
+
+```text
+Show me garment for woman that looks young
+Select all products in womens-dresses
+Find cheap beauty products and show images
+```
+
 *Happy Coding! Let's build agents that actually work.*
