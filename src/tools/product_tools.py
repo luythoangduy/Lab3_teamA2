@@ -141,7 +141,7 @@ class ProductCatalog:
             blocks.append(
                 f"{idx}. **{title}**\n"
                 f"{image_line}"
-                f"- Gia: ${price}\n"
+                f"- Price: ${price}\n"
                 f"- Category: {category}\n"
                 f"- Rating: {rating} | Stock: {stock}"
             )
@@ -275,8 +275,15 @@ def query_products_sql(args: str) -> str:
     return CATALOG.sql_markdown(sql, limit)
 
 
+def _parse_category(args: str) -> str:
+    payload = _parse_args(args)
+    if isinstance(payload, dict):
+        return str(payload.get("category", payload.get("query", ""))).strip()
+    return str(payload).strip().strip("\"'")
+
+
 def list_by_category(args: str) -> str:
-    category = str(_parse_args(args)).strip()
+    category = _parse_category(args)
     sql = "SELECT * FROM products WHERE LOWER(category) = LOWER(?) ORDER BY rating DESC LIMIT ?"
     CATALOG.ensure_loaded()
     with CATALOG._connect() as conn:
@@ -299,12 +306,24 @@ def get_product_by_id(args: str) -> str:
 
 
 def cheapest_in_category(args: str) -> str:
-    category = str(_parse_args(args)).strip()
-    safe_category = category.replace("'", "''")
-    return CATALOG.sql_markdown(
-        f"SELECT * FROM products WHERE LOWER(category) = LOWER('{safe_category}') ORDER BY price ASC",
-        1,
-    )
+    category = _parse_category(args)
+    if not category:
+        return json.dumps({"error": "INVALID_ARGS", "message": "category is required"})
+    CATALOG.ensure_loaded()
+    with CATALOG._connect() as conn:
+        rows = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT * FROM products
+                WHERE LOWER(category) = LOWER(?)
+                ORDER BY price ASC
+                LIMIT 1
+                """,
+                (category,),
+            ).fetchall()
+        ]
+    return CATALOG.format_products_markdown(rows, 1)
 
 
 def create_product_tools(catalog: Optional[ProductCatalog] = None) -> List[Dict[str, Any]]:
@@ -328,6 +347,15 @@ def create_product_tools(catalog: Optional[ProductCatalog] = None) -> List[Dict[
             limit = 5
         return active_catalog.sql_markdown(sql, limit)
 
+    def get_product_by_id_tool(args: str) -> str:
+        return get_product_by_id(args)
+
+    def cheapest_in_category_tool(args: str) -> str:
+        return cheapest_in_category(args)
+
+    def list_by_category_tool(args: str) -> str:
+        return list_by_category(args)
+
     return [
         {
             "name": "refresh_products",
@@ -350,6 +378,21 @@ def create_product_tools(catalog: Optional[ProductCatalog] = None) -> List[Dict[
                 "Columns include id, title, description, category, price, rating, stock, brand, thumbnail, images, tags."
             ),
             "function": query_products_sql_tool,
+        },
+        {
+            "name": "get_product_by_id",
+            "description": 'Fetch product by id. Example: get_product_by_id({"product_id": 7})',
+            "function": get_product_by_id_tool,
+        },
+        {
+            "name": "cheapest_in_category",
+            "description": 'Cheapest in category. Example: cheapest_in_category({"category": "beauty"})',
+            "function": cheapest_in_category_tool,
+        },
+        {
+            "name": "list_by_category",
+            "description": 'List category. Example: list_by_category({"category": "beauty"})',
+            "function": list_by_category_tool,
         },
     ]
 
@@ -391,7 +434,10 @@ PRODUCT_TOOLS: List[Dict[str, Any]] = [
     },
     {
         "name": "cheapest_in_category",
-        "description": "Return the cheapest product in a category. Args: category string.",
+        "description": (
+            "Return the cheapest product in a category. "
+            'Example: cheapest_in_category({"category": "beauty"})'
+        ),
         "function": _TOOL_FUNCS["cheapest_in_category"],
     },
 ]

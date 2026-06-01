@@ -5,6 +5,14 @@ let liveLlm = false;
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
 
+const EMPTY_PANEL = {
+  answer: "(no data — run comparison again)",
+  steps: 0,
+  used_tools: false,
+  trace: [],
+  failures: [],
+};
+
 async function init() {
   const [scRes, cfgRes] = await Promise.all([
     fetch("/api/scenarios"),
@@ -58,38 +66,48 @@ function selectScenario(id) {
 }
 
 function renderPanel(panelEl, data) {
+  const payload = data && typeof data === "object" ? data : EMPTY_PANEL;
   const meta = panelEl.querySelector(".meta");
   const answer = panelEl.querySelector(".answer");
   const traceWrap = panelEl.querySelector(".trace-wrap");
   const traceOl = panelEl.querySelector(".trace");
 
   meta.innerHTML = "";
-  if (data.warning) {
+  if (payload.warning) {
     const w = document.createElement("div");
-    w.className = "warning" + (data.warning.includes("FAKE") ? " fake" : "");
-    w.textContent = data.warning;
+    w.className = "warning" + (payload.warning.includes("FAKE") ? " fake" : "");
+    w.textContent = payload.warning;
     meta.appendChild(w);
   }
-  if (data.failures && data.failures.length) {
+  if (payload.failures && payload.failures.length) {
     const f = document.createElement("div");
     f.className = "warning";
-    f.textContent = `Failures handled: ${data.failures.map((x) => x.code).join(", ")}`;
+    f.textContent = `Failures handled: ${payload.failures.map((x) => x.code).join(", ")}`;
     meta.appendChild(f);
   }
   const info = document.createElement("div");
-  let line = `Steps: ${data.steps} · Tools executed: ${data.used_tools ? "yes" : "no"}`;
-  if (data.images_preserved) line += " · images preserved";
+  let line = `Steps: ${payload.steps ?? 0} · Tools executed: ${payload.used_tools ? "yes" : "no"}`;
+  if (payload.images_preserved) line += " · images preserved";
+  if (payload.mode) line += ` · ${payload.mode}`;
   info.textContent = line;
   meta.appendChild(info);
 
-  if (panelEl.querySelector(".answer-md") && data.answer && data.answer.includes("![")) {
-    answer.innerHTML = renderMarkdownImages(data.answer);
+  const answerText = payload.answer || "(no answer)";
+  if (panelEl.querySelector(".answer-md") && answerText.includes("![")) {
+    answer.innerHTML = renderMarkdownImages(answerText);
   } else {
-    answer.textContent = data.answer || "(no answer)";
+    answer.textContent = answerText;
   }
 
   traceOl.innerHTML = "";
-  const trace = data.trace || [];
+  const trace = [...(payload.trace || [])];
+  (payload.failures || []).forEach((f) => {
+    trace.push({
+      type: "failure",
+      content: `${f.code}${f.recovery ? " → " + f.recovery : ""}${f.detail ? ": " + f.detail : ""}`,
+    });
+  });
+
   if (trace.length === 0) {
     traceWrap.classList.add("hidden");
     return;
@@ -97,9 +115,9 @@ function renderPanel(panelEl, data) {
   traceWrap.classList.remove("hidden");
   trace.forEach((step, i) => {
     const li = document.createElement("li");
-    li.className = step.type;
+    li.className = step.type || "step";
     li.style.animationDelay = `${i * 0.12}s`;
-    li.innerHTML = `<span class="kind">${step.type}</span>${escapeHtml(step.content)}`;
+    li.innerHTML = `<span class="kind">${step.type}</span>${escapeHtml(step.content || "")}`;
     traceOl.appendChild(li);
   });
 }
@@ -144,9 +162,7 @@ async function runComparison() {
     renderPanel($('.panel[data-mode="baseline"]'), data.baseline);
     renderPanel($('.panel[data-mode="tool_aware"]'), data.tool_aware);
     renderPanel($('.panel[data-mode="agent"]'), data.agent);
-    if (data.agent_v2) {
-      renderPanel($('.panel[data-mode="agent_v2"]'), data.agent_v2);
-    }
+    renderPanel($('.panel[data-mode="agent_v2"]'), data.agent_v2 || EMPTY_PANEL);
   } catch (e) {
     alert("Network error: " + e.message);
   } finally {
@@ -158,7 +174,11 @@ async function runComparison() {
 function clearPanels() {
   $$(".panel").forEach((panel) => {
     panel.querySelector(".meta").innerHTML = "";
-    panel.querySelector(".answer").textContent = "";
+    const answer = panel.querySelector(".answer");
+    answer.innerHTML = "";
+    answer.textContent = "";
+    const traceWrap = panel.querySelector(".trace-wrap");
+    traceWrap.classList.remove("hidden");
     panel.querySelector(".trace").innerHTML = "";
   });
 }

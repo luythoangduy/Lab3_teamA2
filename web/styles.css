@@ -194,6 +194,8 @@ h2 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; colo
 .trace li.final_answer { border-left-color: #b388ff; }
 .trace li.parse_error { border-left-color: var(--baseline); }
 .trace li.guard { border-left-color: #5eead4; }
+.trace li.failure { border-left-color: #f472b6; }
+.trace li.error { border-left-color: var(--baseline); }
 
 .trace li span.kind {
   font-weight: 600;

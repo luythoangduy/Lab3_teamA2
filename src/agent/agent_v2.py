@@ -146,6 +146,11 @@ Final Answer: user-facing reply with images when available
             collected_images.extend(IMAGE_MD_RE.findall(observation))
             trace.append({"type": "observation", "content": observation[:2000]})
 
+            if tool_name == "refresh_products" and (
+                "Loaded" in observation or "Cached" in observation
+            ):
+                seen_actions.clear()
+
             recovery = self._recovery_observation(failure, tool_name)
             transcript = f"{transcript}\n\nAssistant:\n{content}\nObservation: {observation}"
             if recovery:
@@ -153,8 +158,16 @@ Final Answer: user-facing reply with images when available
             steps += 1
 
         if final_answer is None:
-            final_answer = "I could not complete the request within the step limit."
+            if collected_images:
+                final_answer = (
+                    "I reached the step limit before a final text answer, "
+                    "but here are product images from tool results:\n\n"
+                    + "\n".join(list(dict.fromkeys(collected_images))[:5])
+                )
+            else:
+                final_answer = "I could not complete the request within the step limit."
             failures.append({"code": "TIMEOUT", "steps": str(steps)})
+            trace.append({"type": "final_answer", "content": final_answer})
             logger.log_event("TIMEOUT", {"steps": steps, "version": "v2"})
 
         tracker.track_request(provider, self.llm.model_name, total_usage, total_latency)
@@ -265,10 +278,25 @@ Final Answer: user-facing reply with images when available
 
     @staticmethod
     def _parse_action(content: str) -> Optional[tuple]:
-        match = re.search(r"Action:\s*([a-zA-Z_][\w]*)\s*\((.*)\)\s*$", content, re.DOTALL)
+        # Prefer Action anywhere in the block (models often add text after the call)
+        match = re.search(r"Action:\s*([a-zA-Z_][\w]*)\s*\((.*)\)", content, re.DOTALL | re.IGNORECASE)
         if not match:
             return None
-        return match.group(1), match.group(2).strip()
+        args = match.group(2).strip()
+        # Trim trailing junk after the closing paren of JSON args
+        depth = 0
+        end = 0
+        for i, ch in enumerate(args):
+            if ch in "{[(":
+                depth += 1
+            elif ch in "}])":
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+        if end:
+            args = args[:end]
+        return match.group(1), args
 
     @staticmethod
     def _parse_final_answer(content: str) -> Optional[str]:
