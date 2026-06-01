@@ -16,7 +16,27 @@ pip install -r requirements.txt
 ```
 
 ### 3. Directory Structure
-- `src/tools/`: Extension point for your custom tools.
+- `src/tools/`: Product catalog tools (dummyjson.com).
+- `src/chatbot/`: Baseline + tool-aware chatbot (no real tool execution).
+- `src/agent/`: ReAct agent with Thought-Action-Observation loop.
+- `demo_compare.py`: Run chatbot vs agent scenarios side-by-side.
+
+### 4. Quick Demo (Product Catalog)
+
+**Web UI (recommended for presentation):**
+```bash
+pip install -r requirements.txt
+python web_demo.py
+# Open http://127.0.0.1:5000 — Simulate mode works without API keys
+python web_demo.py --live   # uses real LLM from .env
+```
+
+**Terminal:**
+```bash
+python demo_compare.py --refresh-cache   # optional: cache 30 products offline
+python demo_compare.py                   # runs 4 scenarios (hallucination, multi-step, ...)
+python demo_compare.py --scenario 1      # single scenario
+```
 
 ## 🏠 Running with Local Models (CPU)
 
