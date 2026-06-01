@@ -61,13 +61,26 @@
 
     <article class="panel agent" data-mode="agent">
       <header>
-        <h3>③ ReAct agent</h3>
-        <span class="tag ok">Real tool loop · grounded answers</span>
+        <h3>③ ReAct agent v1</h3>
+        <span class="tag ok">Tool loop · basic recovery</span>
       </header>
       <div class="meta"></div>
       <div class="answer"></div>
       <div class="trace-wrap">
         <h4>Thought → Action → Observation</h4>
+        <ol class="trace"></ol>
+      </div>
+    </article>
+
+    <article class="panel agent-v2" data-mode="agent_v2">
+      <header>
+        <h3>④ ReAct agent v2</h3>
+        <span class="tag ok">Images + failure detection / avoidance</span>
+      </header>
+      <div class="meta"></div>
+      <div class="answer answer-md"></div>
+      <div class="trace-wrap">
+        <h4>Trace + failures</h4>
         <ol class="trace"></ol>
       </div>
     </article>

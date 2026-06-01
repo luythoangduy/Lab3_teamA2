@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from dotenv import load_dotenv
 
 from src.agent.agent import ReActAgent
+from src.agent.agent_v2 import ReActAgentV2
 from src.chatbot.baseline import BaselineChatbot
 from src.chatbot.tool_aware import ToolAwareChatbot
 from src.core.factory import get_llm_provider
@@ -54,11 +55,13 @@ def run_scenario(llm, scenario: dict) -> None:
 
     baseline = BaselineChatbot(llm)
     tool_chat = ToolAwareChatbot(llm)
-    agent = ReActAgent(llm, max_steps=5)
+    agent_v1 = ReActAgent(llm, max_steps=5)
+    agent_v2 = ReActAgentV2(llm, max_steps=6)
 
     print_block("1) BASELINE CHATBOT (no tools)", baseline.run(scenario["query"]))
     print_block("2) TOOL-AWARE CHATBOT (tools in prompt, not executed)", tool_chat.run(scenario["query"]))
-    print_block("3) REACT AGENT (real tool loop)", agent.run(scenario["query"]))
+    print_block("3) REACT AGENT v1", agent_v1.run(scenario["query"]))
+    print_block("4) REACT AGENT v2 (images + failure guards)", agent_v2.run(scenario["query"]))
 
 
 def main() -> None:

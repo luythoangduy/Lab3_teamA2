@@ -1,6 +1,7 @@
 """Tool implementations used by the ReAct agent."""
 
 from src.tools.product_tools import (
+    CATALOG,
     PRODUCT_TOOLS,
     ProductCatalog,
     create_product_tools,
@@ -9,6 +10,7 @@ from src.tools.product_tools import (
 )
 
 __all__ = [
+    "CATALOG",
     "PRODUCT_TOOLS",
     "ProductCatalog",
     "create_product_tools",

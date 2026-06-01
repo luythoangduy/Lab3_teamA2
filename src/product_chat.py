@@ -3,6 +3,7 @@ import os
 from dotenv import load_dotenv
 
 from src.agent.agent import ReActAgent
+from src.agent.agent_v2 import ReActAgentV2
 from src.tools.product_tools import create_product_tools
 
 
@@ -27,16 +28,27 @@ def build_provider():
     return OpenAIProvider(model_name=model_name, api_key=os.getenv("OPENAI_API_KEY"))
 
 
+def build_agent():
+    llm = build_provider()
+    tools = create_product_tools()
+    if os.getenv("AGENT_VERSION", "v2").lower() == "v1":
+        return ReActAgent(llm=llm, tools=tools, max_steps=5)
+    return ReActAgentV2(llm=llm, tools=tools, max_steps=6)
+
+
 def main() -> None:
-    agent = ReActAgent(llm=build_provider(), tools=create_product_tools(), max_steps=5)
-    print("Product agent ready. Type 'exit' to quit.")
+    agent = build_agent()
+    version = os.getenv("AGENT_VERSION", "v2")
+    print(f"Product agent ready ({version}). Type 'exit' to quit.")
     while True:
         user_input = input("\nUser: ").strip()
         if user_input.lower() in {"exit", "quit"}:
             break
         result = agent.run(user_input)
-        answer = result["answer"] if isinstance(result, dict) else result
+        answer = result.get("answer", result) if isinstance(result, dict) else result
         print(f"\nAssistant:\n{answer}")
+        if isinstance(result, dict) and result.get("failures"):
+            print(f"\n[Failures detected: {len(result['failures'])} — see logs/]")
 
 
 if __name__ == "__main__":

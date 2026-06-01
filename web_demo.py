@@ -40,6 +40,7 @@ def _use_live() -> bool:
 
 def _run_mode(mode: str, query: str, llm=None) -> dict:
     from src.agent.agent import ReActAgent
+    from src.agent.agent_v2 import ReActAgentV2
     from src.chatbot.baseline import BaselineChatbot
     from src.chatbot.tool_aware import ToolAwareChatbot
 
@@ -49,7 +50,41 @@ def _run_mode(mode: str, query: str, llm=None) -> dict:
         return ToolAwareChatbot(llm).run(query)
     if mode == "agent":
         return ReActAgent(llm, max_steps=5).run(query)
+    if mode == "agent_v2":
+        return ReActAgentV2(llm, max_steps=6).run(query)
     raise ValueError(f"Unknown mode: {mode}")
+
+
+def _safe_run_mode(mode: str, query: str, llm=None) -> dict:
+    try:
+        return _run_mode(mode, query, llm)
+    except Exception as exc:
+        return {
+            "answer": f"Agent error: {exc}",
+            "mode": mode,
+            "used_tools": False,
+            "steps": 0,
+            "trace": [{"type": "error", "content": str(exc)}],
+            "failures": [{"code": "RUNTIME_ERROR", "detail": str(exc)}],
+        }
+
+
+def _mock_compare_payload(scenario_key: str, query: str) -> dict:
+    mock = _load_mock()
+    entry = mock[scenario_key]
+    agent_v2 = entry.get("agent_v2")
+    if not agent_v2:
+        agent_v2 = dict(entry.get("agent", {}))
+        agent_v2["mode"] = "react_agent_v2"
+        agent_v2.setdefault("failures", [])
+    return {
+        "query": query,
+        "simulate": True,
+        "baseline": entry["baseline"],
+        "tool_aware": entry["tool_aware"],
+        "agent": entry["agent"],
+        "agent_v2": agent_v2,
+    }
 
 
 @app.route("/")
@@ -74,34 +109,15 @@ def api_compare():
     scenario_id = body.get("scenario_id")
     simulate = body.get("simulate", not _use_live())
 
-    if scenario_id and simulate:
-        mock = _load_mock()
+    if simulate and scenario_id:
         key = str(scenario_id)
+        mock = _load_mock()
         if key in mock:
-            return jsonify(
-                {
-                    "query": SCENARIOS[int(scenario_id) - 1]["query"],
-                    "simulate": True,
-                    "baseline": mock[key]["baseline"],
-                    "tool_aware": mock[key]["tool_aware"],
-                    "agent": mock[key]["agent"],
-                }
-            )
+            q = query or SCENARIOS[int(scenario_id) - 1]["query"]
+            return jsonify(_mock_compare_payload(key, q))
 
     if not query:
         return jsonify({"error": "query or scenario_id required"}), 400
-
-    if simulate and scenario_id:
-        mock = _load_mock()
-        key = str(scenario_id)
-        if key in mock:
-            return jsonify(
-                {
-                    "query": query,
-                    "simulate": True,
-                    **{k: mock[key][k] for k in ("baseline", "tool_aware", "agent")},
-                }
-            )
 
     try:
         from src.core.factory import get_llm_provider
@@ -114,9 +130,10 @@ def api_compare():
         {
             "query": query,
             "simulate": False,
-            "baseline": _run_mode("baseline", query, llm),
-            "tool_aware": _run_mode("tool_aware", query, llm),
-            "agent": _run_mode("agent", query, llm),
+            "baseline": _safe_run_mode("baseline", query, llm),
+            "tool_aware": _safe_run_mode("tool_aware", query, llm),
+            "agent": _safe_run_mode("agent", query, llm),
+            "agent_v2": _safe_run_mode("agent_v2", query, llm),
         }
     )
 
