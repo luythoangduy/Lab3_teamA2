@@ -17,6 +17,7 @@ import sys
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request, send_from_directory
+from werkzeug.exceptions import HTTPException
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -29,6 +30,17 @@ WEB_DIR = os.path.join(ROOT, "web")
 MOCK_PATH = os.path.join(WEB_DIR, "mock_traces.json")
 
 app = Flask(__name__, static_folder=WEB_DIR, static_url_path="")
+
+
+@app.errorhandler(HTTPException)
+def handle_http_error(exc):
+    return jsonify({"error": exc.name, "detail": exc.description}), exc.code
+
+
+@app.errorhandler(Exception)
+def handle_unexpected_error(exc):
+    app.logger.exception("Unhandled web demo error")
+    return jsonify({"error": "Internal server error", "detail": str(exc)}), 500
 
 
 def _load_mock() -> dict:
