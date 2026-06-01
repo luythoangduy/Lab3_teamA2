@@ -17,16 +17,30 @@ import sys
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request, send_from_directory
+from werkzeug.exceptions import HTTPException
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from src.demo.mock_metrics import enrich_mock_entry
 from src.demo.scenarios import SCENARIOS
+from src.telemetry.metrics import build_comparison_evaluation
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 WEB_DIR = os.path.join(ROOT, "web")
 MOCK_PATH = os.path.join(WEB_DIR, "mock_traces.json")
 
 app = Flask(__name__, static_folder=WEB_DIR, static_url_path="")
+
+
+@app.errorhandler(HTTPException)
+def handle_http_error(exc):
+    return jsonify({"error": exc.name, "detail": exc.description}), exc.code
+
+
+@app.errorhandler(Exception)
+def handle_unexpected_error(exc):
+    app.logger.exception("Unhandled web demo error")
+    return jsonify({"error": "Internal server error", "detail": str(exc)}), 500
 
 
 def _load_mock() -> dict:
@@ -59,6 +73,8 @@ def _safe_run_mode(mode: str, query: str, llm=None) -> dict:
     try:
         return _run_mode(mode, query, llm)
     except Exception as exc:
+        from src.telemetry.metrics import build_run_metrics
+
         return {
             "answer": f"Agent error: {exc}",
             "mode": mode,
@@ -66,25 +82,49 @@ def _safe_run_mode(mode: str, query: str, llm=None) -> dict:
             "steps": 0,
             "trace": [{"type": "error", "content": str(exc)}],
             "failures": [{"code": "RUNTIME_ERROR", "detail": str(exc)}],
+            "metrics": build_run_metrics("error", "n/a", {}, 0, llm_calls=0),
         }
+
+
+def _compare_payload(
+    query: str,
+    baseline: dict,
+    tool_aware: dict,
+    agent: dict,
+    agent_v2: dict,
+    simulate: bool,
+) -> dict:
+    modes = {
+        "baseline": baseline,
+        "tool_aware": tool_aware,
+        "agent": agent,
+        "agent_v2": agent_v2,
+    }
+    return {
+        "query": query,
+        "simulate": simulate,
+        **modes,
+        "evaluation": build_comparison_evaluation(modes),
+    }
 
 
 def _mock_compare_payload(scenario_key: str, query: str) -> dict:
     mock = _load_mock()
-    entry = mock[scenario_key]
+    entry = enrich_mock_entry(dict(mock[scenario_key]), scenario_key)
     agent_v2 = entry.get("agent_v2")
     if not agent_v2:
         agent_v2 = dict(entry.get("agent", {}))
         agent_v2["mode"] = "react_agent_v2"
         agent_v2.setdefault("failures", [])
-    return {
-        "query": query,
-        "simulate": True,
-        "baseline": entry["baseline"],
-        "tool_aware": entry["tool_aware"],
-        "agent": entry["agent"],
-        "agent_v2": agent_v2,
-    }
+        agent_v2["metrics"] = entry.get("agent", {}).get("metrics")
+    return _compare_payload(
+        query,
+        entry["baseline"],
+        entry["tool_aware"],
+        entry["agent"],
+        agent_v2,
+        simulate=True,
+    )
 
 
 @app.route("/")
@@ -126,16 +166,11 @@ def api_compare():
     except ValueError as exc:
         return jsonify({"error": str(exc), "hint": "Use simulate mode or set API keys in .env"}), 503
 
-    return jsonify(
-        {
-            "query": query,
-            "simulate": False,
-            "baseline": _safe_run_mode("baseline", query, llm),
-            "tool_aware": _safe_run_mode("tool_aware", query, llm),
-            "agent": _safe_run_mode("agent", query, llm),
-            "agent_v2": _safe_run_mode("agent_v2", query, llm),
-        }
-    )
+    baseline = _safe_run_mode("baseline", query, llm)
+    tool_aware = _safe_run_mode("tool_aware", query, llm)
+    agent = _safe_run_mode("agent", query, llm)
+    agent_v2 = _safe_run_mode("agent_v2", query, llm)
+    return jsonify(_compare_payload(query, baseline, tool_aware, agent, agent_v2, simulate=False))
 
 
 @app.post("/api/run")
