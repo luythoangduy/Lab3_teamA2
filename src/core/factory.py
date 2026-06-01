@@ -24,10 +24,11 @@ def get_llm_provider(
         return OpenAIProvider(model_name=model, api_key=key)
 
     if provider in ("google", "gemini"):
-        key = api_key or os.getenv("GEMINI_API_KEY")
+        key = api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
         if not key:
-            raise ValueError("GEMINI_API_KEY missing in .env")
-        return GeminiProvider(model_name=model or "gemini-1.5-flash", api_key=key)
+            raise ValueError("GEMINI_API_KEY or GOOGLE_API_KEY missing in .env")
+        gemini_model = os.getenv("GOOGLE_GEMINI_MODEL") or os.getenv("GEMINI_MODEL") or model or "gemini-1.5-flash"
+        return GeminiProvider(model_name=gemini_model, api_key=key)
 
     if provider == "local":
         from src.core.local_provider import LocalProvider

@@ -70,11 +70,23 @@ function renderPanel(panelEl, data) {
     w.textContent = data.warning;
     meta.appendChild(w);
   }
+  if (data.failures && data.failures.length) {
+    const f = document.createElement("div");
+    f.className = "warning";
+    f.textContent = `Failures handled: ${data.failures.map((x) => x.code).join(", ")}`;
+    meta.appendChild(f);
+  }
   const info = document.createElement("div");
-  info.textContent = `Steps: ${data.steps} · Tools executed: ${data.used_tools ? "yes" : "no"}`;
+  let line = `Steps: ${data.steps} · Tools executed: ${data.used_tools ? "yes" : "no"}`;
+  if (data.images_preserved) line += " · images preserved";
+  info.textContent = line;
   meta.appendChild(info);
 
-  answer.textContent = data.answer || "(no answer)";
+  if (panelEl.querySelector(".answer-md") && data.answer && data.answer.includes("![")) {
+    answer.innerHTML = renderMarkdownImages(data.answer);
+  } else {
+    answer.textContent = data.answer || "(no answer)";
+  }
 
   traceOl.innerHTML = "";
   const trace = data.trace || [];
@@ -96,6 +108,14 @@ function escapeHtml(s) {
   const d = document.createElement("div");
   d.textContent = s;
   return d.innerHTML;
+}
+
+function renderMarkdownImages(text) {
+  const escaped = escapeHtml(text);
+  return escaped.replace(
+    /!\[([^\]]*)\]\(([^)]+)\)/g,
+    '<img alt="$1" src="$2" loading="lazy" />'
+  );
 }
 
 async function runComparison() {
@@ -124,6 +144,9 @@ async function runComparison() {
     renderPanel($('.panel[data-mode="baseline"]'), data.baseline);
     renderPanel($('.panel[data-mode="tool_aware"]'), data.tool_aware);
     renderPanel($('.panel[data-mode="agent"]'), data.agent);
+    if (data.agent_v2) {
+      renderPanel($('.panel[data-mode="agent_v2"]'), data.agent_v2);
+    }
   } catch (e) {
     alert("Network error: " + e.message);
   } finally {

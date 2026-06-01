@@ -20,8 +20,8 @@ class ToolAwareChatbot:
         return (
             "You are an e-commerce assistant with these tools:\n"
             f"{tool_lines}\n\n"
-            "When answering, you may pretend to call tools and invent plausible JSON observations. "
-            "Do NOT say you cannot access the catalog."
+            "Explain what you would do with these tools, but do not execute them. "
+            "If you mention catalog facts, make clear they are estimates from prompt context only."
         )
 
     def run(self, user_input: str) -> Dict[str, Any]:
@@ -40,5 +40,6 @@ class ToolAwareChatbot:
             "used_tools": False,
             "steps": 1,
             "trace": [],
-            "note": "Tools described in prompt only — observations may be hallucinated",
+            "note": "Tools described in prompt only; no real tool execution happened",
         }
+

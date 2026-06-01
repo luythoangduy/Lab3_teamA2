@@ -40,6 +40,7 @@ def _use_live() -> bool:
 
 def _run_mode(mode: str, query: str, llm=None) -> dict:
     from src.agent.agent import ReActAgent
+    from src.agent.agent_v2 import ReActAgentV2
     from src.chatbot.baseline import BaselineChatbot
     from src.chatbot.tool_aware import ToolAwareChatbot
 
@@ -49,6 +50,8 @@ def _run_mode(mode: str, query: str, llm=None) -> dict:
         return ToolAwareChatbot(llm).run(query)
     if mode == "agent":
         return ReActAgent(llm, max_steps=5).run(query)
+    if mode == "agent_v2":
+        return ReActAgentV2(llm, max_steps=6).run(query)
     raise ValueError(f"Unknown mode: {mode}")
 
 
@@ -85,6 +88,7 @@ def api_compare():
                     "baseline": mock[key]["baseline"],
                     "tool_aware": mock[key]["tool_aware"],
                     "agent": mock[key]["agent"],
+                    "agent_v2": mock[key].get("agent_v2", mock[key]["agent"]),
                 }
             )
 
@@ -99,7 +103,10 @@ def api_compare():
                 {
                     "query": query,
                     "simulate": True,
-                    **{k: mock[key][k] for k in ("baseline", "tool_aware", "agent")},
+                    **{
+                        k: mock[key][k if k != "agent_v2" else "agent"]
+                        for k in ("baseline", "tool_aware", "agent", "agent_v2")
+                    },
                 }
             )
 
@@ -117,6 +124,7 @@ def api_compare():
             "baseline": _run_mode("baseline", query, llm),
             "tool_aware": _run_mode("tool_aware", query, llm),
             "agent": _run_mode("agent", query, llm),
+            "agent_v2": _run_mode("agent_v2", query, llm),
         }
     )
 

@@ -104,11 +104,15 @@ h2 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; colo
 
 .columns {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 1rem;
 }
 
-@media (max-width: 960px) {
+@media (max-width: 1200px) {
+  .columns { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (max-width: 640px) {
   .columns { grid-template-columns: 1fr; }
 }
 
@@ -123,6 +127,9 @@ h2 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; colo
 .panel.baseline { border-top-color: var(--baseline); }
 .panel.tool-aware { border-top-color: var(--tool); }
 .panel.agent { border-top-color: var(--agent); }
+.panel.agent-v2 { border-top-color: #5eead4; }
+
+.answer-md img { max-width: 100%; border-radius: 6px; margin: 0.25rem 0; }
 
 .panel header h3 { margin: 0 0 0.35rem; font-size: 0.95rem; }
 
@@ -186,6 +193,7 @@ h2 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; colo
 .trace li.observation { border-left-color: var(--agent); }
 .trace li.final_answer { border-left-color: #b388ff; }
 .trace li.parse_error { border-left-color: var(--baseline); }
+.trace li.guard { border-left-color: #5eead4; }
 
 .trace li span.kind {
   font-weight: 600;
