@@ -34,7 +34,9 @@ def main() -> None:
         user_input = input("\nUser: ").strip()
         if user_input.lower() in {"exit", "quit"}:
             break
-        print(f"\nAssistant:\n{agent.run(user_input)}")
+        result = agent.run(user_input)
+        answer = result.get("answer", result) if isinstance(result, dict) else result
+        print(f"\nAssistant:\n{answer}")
 
 
 if __name__ == "__main__":

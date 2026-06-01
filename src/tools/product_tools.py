@@ -2,7 +2,7 @@ import json
 import re
 import sqlite3
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 
 import requests
 
@@ -58,11 +58,7 @@ class ProductCatalog:
             return int(conn.execute("SELECT COUNT(*) FROM products").fetchone()[0])
 
     def refresh_from_api(self, limit: int = 100) -> int:
-        response = requests.get(
-            self.api_url,
-            params={"limit": limit},
-            timeout=self.request_timeout,
-        )
+        response = requests.get(self.api_url, params={"limit": limit}, timeout=self.request_timeout)
         response.raise_for_status()
         products = response.json().get("products", [])
 
@@ -94,13 +90,7 @@ class ProductCatalog:
             sql = "SELECT * FROM products ORDER BY rating DESC, stock DESC LIMIT ?"
             params: Sequence[Any] = (limit,)
         else:
-            searchable_columns = [
-                "title",
-                "description",
-                "category",
-                "brand",
-                "tags",
-            ]
+            searchable_columns = ["title", "description", "category", "brand", "tags"]
             clauses = []
             params = []
             for term in terms:
@@ -208,7 +198,6 @@ class ProductCatalog:
     def _heuristic_terms(user_query: str) -> List[str]:
         text = user_query.lower()
         terms = re.findall(r"[a-z0-9]+", text)
-
         heuristic_map = {
             ("looks young", "young", "teen", "fresh", "cute", "bright color", "bright"): [
                 "white",
@@ -228,13 +217,7 @@ class ProductCatalog:
                 "jewel",
                 "watch",
             ],
-            ("woman", "women", "female", "lady", "girl"): [
-                "women",
-                "womens",
-                "dress",
-                "beauty",
-                "jewel",
-            ],
+            ("woman", "women", "female", "lady", "girl"): ["women", "womens", "dress", "beauty", "jewel"],
             ("man", "men", "male", "boy"): ["men", "mens", "shirt", "shoe", "watch"],
             ("cheap", "budget", "low price", "affordable"): ["discount", "sale"],
         }
@@ -268,18 +251,66 @@ class ProductCatalog:
         return unique_terms[:12]
 
 
-def create_product_tools(catalog: Optional[ProductCatalog] = None) -> List[Dict[str, Any]]:
-    catalog = catalog or ProductCatalog()
+CATALOG = ProductCatalog()
 
-    def refresh_products(args: str = "") -> str:
-        count = catalog.refresh_from_api()
+
+def refresh_cache(limit: int = 100) -> str:
+    count = CATALOG.refresh_from_api(limit=limit)
+    return f"Cached {count} products to {CATALOG.db_path}"
+
+
+def search_products(args: str) -> str:
+    query, limit = _parse_query_and_limit(args)
+    return CATALOG.search_markdown(query, limit)
+
+
+def query_products_sql(args: str) -> str:
+    payload = _parse_args(args)
+    if isinstance(payload, dict):
+        sql = payload.get("sql") or payload.get("query") or ""
+        limit = int(payload.get("limit", 5))
+    else:
+        sql = str(payload)
+        limit = 5
+    return CATALOG.sql_markdown(sql, limit)
+
+
+def list_by_category(args: str) -> str:
+    category = str(_parse_args(args)).strip()
+    sql = "SELECT * FROM products WHERE LOWER(category) = LOWER(?) ORDER BY rating DESC LIMIT ?"
+    CATALOG.ensure_loaded()
+    with CATALOG._connect() as conn:
+        rows = [dict(row) for row in conn.execute(sql, (category, 5)).fetchall()]
+    return CATALOG.format_products_markdown(rows, 5)
+
+
+def get_product_by_id(args: str) -> str:
+    payload = _parse_args(args)
+    product_id = int(payload.get("id") if isinstance(payload, dict) else payload)
+    return CATALOG.sql_markdown(f"SELECT * FROM products WHERE id = {product_id}", 1)
+
+
+def cheapest_in_category(args: str) -> str:
+    category = str(_parse_args(args)).strip()
+    safe_category = category.replace("'", "''")
+    return CATALOG.sql_markdown(
+        f"SELECT * FROM products WHERE LOWER(category) = LOWER('{safe_category}') ORDER BY price ASC",
+        1,
+    )
+
+
+def create_product_tools(catalog: Optional[ProductCatalog] = None) -> List[Dict[str, Any]]:
+    active_catalog = catalog or CATALOG
+
+    def refresh_products_tool(args: str = "") -> str:
+        count = active_catalog.refresh_from_api()
         return f"Loaded {count} products from DummyJSON."
 
-    def search_products(args: str) -> str:
+    def search_products_tool(args: str) -> str:
         query, limit = _parse_query_and_limit(args)
-        return catalog.search_markdown(query, limit)
+        return active_catalog.search_markdown(query, limit)
 
-    def query_products_sql(args: str) -> str:
+    def query_products_sql_tool(args: str) -> str:
         payload = _parse_args(args)
         if isinstance(payload, dict):
             sql = payload.get("sql") or payload.get("query") or ""
@@ -287,13 +318,13 @@ def create_product_tools(catalog: Optional[ProductCatalog] = None) -> List[Dict[
         else:
             sql = str(payload)
             limit = 5
-        return catalog.sql_markdown(sql, limit)
+        return active_catalog.sql_markdown(sql, limit)
 
     return [
         {
             "name": "refresh_products",
             "description": "Load or refresh product data from https://dummyjson.com/products into local SQLite.",
-            "function": refresh_products,
+            "function": refresh_products_tool,
         },
         {
             "name": "search_products",
@@ -302,7 +333,7 @@ def create_product_tools(catalog: Optional[ProductCatalog] = None) -> List[Dict[
                 "Useful for requests like looks young, bright color, garment for woman, or product names. "
                 "Returns at most 5 products with Markdown images."
             ),
-            "function": search_products,
+            "function": search_products_tool,
         },
         {
             "name": "query_products_sql",
@@ -310,9 +341,61 @@ def create_product_tools(catalog: Optional[ProductCatalog] = None) -> List[Dict[
                 "Run a read-only SELECT query against the products SQLite table. "
                 "Columns include id, title, description, category, price, rating, stock, brand, thumbnail, images, tags."
             ),
-            "function": query_products_sql,
+            "function": query_products_sql_tool,
         },
     ]
+
+
+_TOOL_FUNCS: Dict[str, Callable[[str], str]] = {
+    "refresh_products": lambda args: refresh_cache(),
+    "search_products": search_products,
+    "query_products_sql": query_products_sql,
+    "list_by_category": list_by_category,
+    "get_product_by_id": get_product_by_id,
+    "cheapest_in_category": cheapest_in_category,
+}
+
+PRODUCT_TOOLS: List[Dict[str, Any]] = [
+    {
+        "name": "refresh_products",
+        "description": "Load or refresh product data from DummyJSON into local SQLite.",
+        "function": _TOOL_FUNCS["refresh_products"],
+    },
+    {
+        "name": "search_products",
+        "description": "Search products with natural language and heuristics; returns at most 5 Markdown image results.",
+        "function": _TOOL_FUNCS["search_products"],
+    },
+    {
+        "name": "query_products_sql",
+        "description": "Run a read-only SELECT query against the local products SQLite table.",
+        "function": _TOOL_FUNCS["query_products_sql"],
+    },
+    {
+        "name": "list_by_category",
+        "description": "List products in a category. Args: category string.",
+        "function": _TOOL_FUNCS["list_by_category"],
+    },
+    {
+        "name": "get_product_by_id",
+        "description": "Fetch exact product by id. Args: product id.",
+        "function": _TOOL_FUNCS["get_product_by_id"],
+    },
+    {
+        "name": "cheapest_in_category",
+        "description": "Return the cheapest product in a category. Args: category string.",
+        "function": _TOOL_FUNCS["cheapest_in_category"],
+    },
+]
+
+
+def execute_tool(tool_name: str, args: str) -> str:
+    if tool_name not in _TOOL_FUNCS:
+        return json.dumps({"error": "HALLUCINATED_TOOL", "message": f"Tool '{tool_name}' does not exist"})
+    try:
+        return _TOOL_FUNCS[tool_name](args)
+    except Exception as exc:
+        return json.dumps({"error": "INVALID_ARGS", "message": str(exc), "received": args})
 
 
 def _parse_query_and_limit(args: str) -> tuple[str, int]:
