@@ -1,277 +1,357 @@
-# Group Report: Lab 3 - Production-Grade Agentic System
+# Group Report: Lab 3 - Chatbot vs ReAct Agent
 
 - **Team Name**: Team A2
 - **Team Members**: Minh (minhh), Đạt (dat), Duy (duyhk)
-- **Deployment Date**: 2026-06-01
+- **Branch**: `minhh` (integrated `duyhk` + `dat`)
+- **Date**: 2026-06-01
 
 ---
 
 ## 1. Executive Summary
 
-Our project implements a production-ready shopping assistant that transitions from a simple, hallucination-prone LLM chatbot to a sophisticated **ReAct Agent** equipped with robust local tools. The system is backed by a public product catalog from [DummyJSON](https://dummyjson.com/products) and cached locally in an SQLite database.
+We built a **four-mode comparison system** for a DummyJSON product shopping assistant. All modes share the same catalog ([dummyjson.com/products](https://dummyjson.com/products)) cached in SQLite at `data/products.sqlite3`, but they differ in whether tools are described, executed, and monitored.
 
-- **Success Rate**: **92.5%** on 40 diverse test cases (including hallucination traps, multi-step queries, and complex factual lookups).
-- **Key Outcome**: The baseline LLM chatbot failed on 100% of factual catalog queries (e.g., exact stock, prices, and IDs) and fabricated information. In contrast, the ReAct Agent resolved these queries with high precision by executing grounded database actions, reducing factual errors and hallucinations to 0% when using the tools correctly.
+| Mode | Implementation | Tools executed? |
+| :--- | :--- | :--- |
+| **Baseline chatbot** | `src/chatbot/baseline.py` | No |
+| **Tool-aware chatbot** | `src/chatbot/tool_aware.py` | No (tools in prompt only; can fake `Observation:` text) |
+| **ReAct Agent v1** | `src/agent/agent.py` | Yes — Thought → Action → Observation loop |
+| **ReAct Agent v2** | `src/agent/agent_v2.py` | Yes — v1 + guardrails, failure codes, image preservation |
+
+**Key outcomes (lab scenarios, live / simulate demos):**
+
+- **Baseline** and **tool-aware** chatbots routinely invent prices, stock, and product names on factual catalog questions.
+- **Tool-aware** mode is especially misleading: it may write plausible `Action:` / `Observation:` blocks **without calling any tool**.
+- **Agents (v1/v2)** ground answers in SQLite/API observations; on the hallucination trap (Samsung Galaxy S24), they search the DB and report *not found* instead of inventing inventory.
+- **Agent v2** adds structured `failures[]` telemetry (e.g. `HALLUCINATED_TOOL`, `EMPTY_RESULT`, `DUPLICATE_ACTION`) and recovery hints in the transcript.
+
+**Automated 40-case benchmark** (`python run_evaluation.py`, simulate mode — see `report/EVALUATION_DASHBOARD.md`):
+
+| Metric | Result |
+| :--- | :--- |
+| Product name in final answer | **67.5%** (27/40) |
+| Total estimated cost (40 runs) | **$0.01038 USD** |
+| Avg latency (simulate) | **~0.17 s** per case |
+| Total tokens (simulate) | **48,800** |
+
+> **Note:** The 40-case suite uses `SimulatedLLMProvider` by default for reproducible grading without API keys. Heuristic-search cases fail more often in simulate mode because the mock LLM picks simplified tool arguments. For production claims, re-run with `python run_evaluation.py --live` and label the provider in the dashboard.
+
+**How to reproduce demos**
+
+```bash
+python web_demo.py              # http://127.0.0.1:5000 — Simulate (no API key)
+python web_demo.py --live       # real LLM from .env
+python demo_compare.py --simulate
+python demo_compare.py --scenario 2
+python run_evaluation.py        # regenerate EVALUATION_DASHBOARD.md
+```
 
 ---
 
-## 2. System Architecture & Tooling
+## 2. Team Contributions
 
-### 2.1 ReAct Loop Implementation
+| Member | Branch | Primary deliverables |
+| :--- | :--- | :--- |
+| **Duy** | `duyhk` | SQLite `ProductCatalog`, product tools, heuristic search, `product_chat.py`, agent skeleton |
+| **Minh** | `minhh` | Baseline + tool-aware chatbots, Agent v1/v2, web demo (`web_demo.py`, `web/`), `demo_compare.py`, scenarios, token/cost UI, merges |
+| **Đạt** | `dat` | `run_evaluation.py` (40-case suite), `report/EVALUATION_DASHBOARD.md`, group report structure, CLI metrics in `product_chat.py` |
 
-The architecture implements a rigorous `Thought -> Action -> Observation` cycle that governs how the agent interacts with the product database and resolves user requests.
+All three branches are merged on `minhh`.
+
+---
+
+## 3. System Architecture
+
+### 3.1 Four-mode comparison flow
+
+```mermaid
+graph LR
+    Q[User query] --> B[Baseline chatbot]
+    Q --> T[Tool-aware chatbot]
+    Q --> A1[ReAct Agent v1]
+    Q --> A2[ReAct Agent v2]
+    B --> LLM1[Single LLM call]
+    T --> LLM2[Single LLM call — tools not run]
+    A1 --> Loop[Thought → Action → Observation]
+    A2 --> Loop2[Loop + guardrails + failures]
+    Loop --> DB[(SQLite catalog)]
+    Loop2 --> DB
+    B --> M[metrics: tokens, cost, latency]
+    T --> M
+    A1 --> M
+    A2 --> M
+    M --> UI[Web / CLI evaluation table]
+```
+
+**Entry points**
+
+| Artifact | Role |
+| :--- | :--- |
+| `web_demo.py` + `web/index.html` | Side-by-side UI, scenario picker, token & cost summary |
+| `demo_compare.py` | Terminal 4-mode compare + `--simulate` |
+| `run_evaluation.py` | 40-case agent benchmark → markdown dashboard |
+| `src/product_chat.py` | Interactive CLI (`AGENT_VERSION=v1\|v2`) |
+
+### 3.2 ReAct loop (Agent v1 & v2)
 
 ```mermaid
 graph TD
-    User([User Prompt]) --> Loop{Steps < Max Steps}
-    Loop -- Yes --> Generate[LLM Generation]
-    Generate --> Parse{Parse Response}
-    
-    Parse -- Thought + Action --> Execute[Execute Tool]
-    Execute --> Obs[Capture Observation]
-    Obs --> Feedback[Append Observation to Transcript]
-    Feedback --> Loop
-    
-    Parse -- Final Answer --> Return([Return Answer to User])
-    Parse -- Parse Error / Fail --> Fallback[Default Final Answer]
-    Fallback --> Return
-    
-    Loop -- No (Timeout) --> Timeout[Timeout Message]
-    Timeout --> Return
+    User([User Prompt]) --> Loop{steps < max_steps?}
+    Loop -- Yes --> Gen[LLM generate on transcript]
+    Gen --> Parse{Parse output}
+    Parse -- Thought + Action --> Exec[execute_tool]
+    Exec --> Obs[Observation from DB/API]
+    Obs --> V2{v2 guard?}
+    V2 -- recovery needed --> Guard[Append GUARD hint]
+    Guard --> Loop
+    V2 -- ok --> Loop
+    Parse -- Final Answer --> Out([Return answer + trace + metrics])
+    Parse -- parse error --> Retry[Parse retry / GUARD]
+    Retry --> Loop
+    Loop -- No --> Timeout[Timeout answer]
+    Timeout --> Out
 ```
 
-The system prompt strictly binds the model's outputs to this structure:
-1. **Thought**: Step-by-step reasoning explaining the cognitive approach.
-2. **Action**: Standard tool invocation in the format `tool_name({"param": "value"})`.
-3. **Observation**: Concrete, factual database results passed back from the environment.
-4. **Final Answer**: Grounded response containing only verified catalog facts.
+**Output format (agents):** `Thought` → `Action: tool_name({json})` → environment `Observation` → … → `Final Answer`.
 
----
+### 3.3 Agent v1 vs v2
 
-### 2.2 Tool Definitions (Inventory)
-
-The agent has access to a collection of robust, database-grounded Python tools:
-
-| Tool Name | Input Format | Use Case / Description |
+| Feature | v1 (`agent.py`) | v2 (`agent_v2.py`) |
 | :--- | :--- | :--- |
-| `refresh_products` | `string` (empty) | Fetches the latest product catalog from the DummyJSON API and rebuilds the local SQLite database cache. |
-| `search_products` | `{"query": "text", "limit": 5}` | Searches products using natural language. Employs token expansion heuristics (e.g., mapping "looks young" to bright colors). |
-| `get_product_by_id` | `{"product_id": integer}` | Fetches a single product's exact details (title, price, brand, rating, stock) by its unique database primary key. |
-| `cheapest_in_category`| `{"category": "text"}` | Directly queries the database for the item with the minimum price in a specified category (groceries, beauty, etc.). |
-| `query_products_sql` | `{"sql": "SELECT...", "limit": 5}`| Executes a read-only SQL query on the `products` table for advanced filtering, sorting, and tag-matching. |
+| ReAct loop | Yes | Yes |
+| Parse retry | Basic | `max_parse_retries` + GUARD observations |
+| Unknown tool | Error string in observation | `HALLUCINATED_TOOL` + valid-tool list |
+| Duplicate action | No | Blocked; cleared after successful `refresh_products` |
+| Empty catalog | Manual | Auto `refresh_products` + `EMPTY_CATALOG` |
+| Images in answer | Optional | Collect from observations; `MISSING_IMAGES_IN_ANSWER` guard |
+| Telemetry | `metrics`, `trace` | + `failures[]`, `images_preserved` |
+
+**v2 failure codes (rule-based, not ML):**  
+`EMPTY_CATALOG`, `EMPTY_LLM_RESPONSE`, `PARSE_ERROR`, `DUPLICATE_ACTION`, `HALLUCINATED_TOOL`, `TOOL_ERROR`, `EMPTY_RESULT`, `NOT_FOUND`, `TIMEOUT`, `MISSING_IMAGES_IN_ANSWER`.
 
 ---
 
-### 2.3 Tool Design Evolution
+## 4. Tooling
 
-Our tool suite underwent three major design iterations to ensure industrial-grade stability, precision, and efficiency:
+### 4.1 Tool inventory
 
-#### 1. Phase 1: Simple Generic Search (v1)
-- **Design**: The system initially featured a single natural language search tool `search_products` returning full product lists as raw strings.
-- **Failures**:
-  - **Prompt Bloat**: Returning complete product lists quickly exceeded the LLM's context token limits.
-  - **Reasoning Failures**: For queries like *"What is the cheapest product..."*, the LLM retrieved many products and performed manual comparisons. This often led to mathematical and ranking mistakes due to bad reasoning logic.
-  - **Parser Breakers**: Simple string arguments broke when users input search terms containing quotes or commas.
+| Tool | Input | Purpose |
+| :--- | :--- | :--- |
+| `refresh_products` | `""` or `{}` | Fetch from DummyJSON API; rebuild SQLite cache |
+| `search_products` | `{"query": "...", "limit": 5}` | Heuristic NL search (`_heuristic_terms` expansions) |
+| `relaxed_search_products` | `{"query": "...", "limit": 5}` | Broader token matching |
+| `get_product_by_id` | `{"product_id": N}` | Exact row by ID |
+| `cheapest_in_category` | `{"category": "beauty"}` | SQL `MIN(price)` for category |
+| `list_by_category` | `{"category": "..."}` | List products in category |
+| `query_products_sql` | `{"sql": "SELECT ...", "limit": 5}` | Read-only SQL (`SELECT` only; writes rejected) |
 
-#### 2. Phase 2: Specialized Category & Identity Tools (v2)
-- **Design**: We created dedicated tools: `get_product_by_id` and `cheapest_in_category`.
-- **Improvements**:
-  - **Deterministic Aggregations**: Min-value lookups (e.g., finding the cheapest item) are computed inside SQLite at the database level rather than by the LLM, reducing latency and achieving 100% mathematical accuracy.
-  - **Direct Lookup**: Factual queries about specific product IDs bypass fuzzy search heuristics entirely, removing the chance of retrieving wrong objects.
-  - **Input Robustness**: Transitioned to structured JSON payloads (`{"product_id": 7}`). We built a fallback parser `_parse_args` in `product_tools.py` that handles both valid JSON strings and raw unquoted text, stopping parse failures before they abort the run.
+Catalog formatting includes Markdown thumbnails: `![title](url)`.
 
-#### 3. Phase 3: Secure SQL Engine & Query Expansion Heuristics (v3)
-- **Design**: Introduced `query_products_sql` for complex compound filtering and incorporated keyword expansions inside the search engine.
-- **Improvements**:
-  - **Schema Security**: Forbid write queries (e.g., `INSERT`, `DROP`, `UPDATE`) using a regex filter. The system throws a safe validation error if non-SELECT statements are attempted.
-  - **Heuristic Search mapping**: Since deep neural search is slow, we built automatic expansions in `_heuristic_terms` for common heuristic concepts. Queries like *"looks young garment for woman"* are mapped under the hood to `["womens", "dress", "beauty", "white", "pink", "bright"]`, returning highly relevant items in a fast SQLite `LIKE` search without requiring massive prompt engineering or external vector database setups.
+### 4.2 Tool design evolution
 
----
+**Phase 1 — Generic search only**  
+Single `search_products` returned large blobs; the LLM compared prices manually and often erred.
 
-### 2.4 LLM Providers Used
+**Phase 2 — Specialized tools**  
+Added `get_product_by_id`, `cheapest_in_category`, JSON args via `_parse_args`. Aggregations run in SQLite, not in the model.
 
-Our engine abstractly supports seamless switching between three providers via the `LLMProvider` interface:
-- **Primary**: **OpenAI GPT-4o-mini** - Selected for its excellent ReAct parsing accuracy, low latency, and highly reliable JSON parameter formatting.
-- **Backup**: **Gemini 1.5 Flash** - Highly cost-efficient, handles long multi-step trace histories perfectly.
-- **Local**: **Phi-3-mini-4k-instruct-q4.gguf** - Configured for completely offline CPU operations via `llama-cpp-python`.
+**Phase 3 — SQL + heuristics + robust parsing**  
+Added `query_products_sql`, `list_by_category`, `relaxed_search_products`, schema hints in tool descriptions, and `_heuristic_terms` for queries like *“garment for woman that looks young”*.
 
----
+**Phase 4 — Integration fixes (minhh)**  
+- `_parse_category()` so `cheapest_in_category({"category": "beauty"})` does not stringify the dict into a bogus category key.  
+- Parameterized SQL for category min-price.  
+- v2 clears duplicate-action memory after a successful catalog refresh.
 
-## 3. Telemetry & Performance Dashboard
+### 4.3 LLM providers
 
-Telemetry data is logged locally in structured JSON lines in `logs/` to capture product performance metrics. Below is the dashboard analysis from our 40-case evaluation test suite (using GPT-4o-mini):
+Via `src/core/factory.py` (`LLMProvider` interface):
 
-- **Average Latency (P50)**: **1250ms** (single-step direct lookup).
-- **Max Latency (P99)**: **4100ms** (complex multi-step SQL search + comparison loops).
-- **Average Steps per Task**: **1.6 steps** (most queries resolved within a single tool call and one final synthesis).
-- **Token Efficiency**: 
-  - *Average Input Tokens*: **450 tokens** (highly optimized system prompt minimizing base token consumption).
-  - *Average Output Tokens*: **95 tokens** (achieved by restricting verbose "chatter" before tool calls).
-- **Total Test Suite Cost (40 Runs)**: **~$0.0084 USD** (making it exceptionally production-ready and affordable).
-- **Success Rate by Query Type**:
-  - *Factual / Lookup*: **100%** (15 / 15 correct)
-  - *Multi-Step comparison*: **90%** (9 / 10 correct)
-  - *Hallucination traps*: **100%** (5 / 5 correctly handled by reporting "not found")
-  - *Unstructured Heuristics*: **80%** (8 / 10 correct)
+- **OpenAI** — `gpt-4o-mini` (default for demos)
+- **Gemini** — `gemini-1.5-flash` (empty-response handling in provider)
+- **Local** — `Phi-3-mini-4k-instruct-q4.gguf` via `llama-cpp-python`
+
+Set `DEFAULT_PROVIDER` in `.env`.
 
 ---
 
-## 4. Trace Quality & Failure Analysis (RCA)
+## 5. Telemetry & Evaluation
 
-### 4.1 Successful Traces
+### 5.1 Per-run metrics (all four modes)
 
-#### Case 1: Direct Factual ID Lookup (Scenario 3)
+Each `run()` returns a `metrics` object built by `src/telemetry/metrics.py`:
+
+- `llm_calls`, `prompt_tokens`, `completion_tokens`, `total_tokens`
+- `latency_ms`, `cost_usd` (pricing table for gpt-4o-mini / gpt-4o / Gemini)
+- `simulated` flag when using mock estimates
+
+`build_comparison_evaluation()` aggregates per-mode totals for the web UI and `demo_compare.py`.
+
+### 5.2 Lab scenarios (`src/demo/scenarios.py`)
+
+| ID | Name | Query focus |
+| :---: | :--- | :--- |
+| 1 | Hallucination trap | Samsung Galaxy S24 (not in catalog) |
+| 2 | Cheapest + stock | `cheapest_in_category(beauty)` |
+| 3 | Factual ID | `get_product_by_id(7)` → Chanel Coco Noir |
+| 4 | Search + compare | Mascara products, lowest price |
+
+### 5.3 40-case automated suite
+
+`run_evaluation.py`:
+
+1. Refreshes SQLite from API  
+2. Auto-generates 40 cases (ID lookup, cheapest-in-category, heuristic search)  
+3. Runs **ReAct Agent v1** with live or simulated LLM  
+4. Writes `report/EVALUATION_DASHBOARD.md`
+
+**Latest simulate dashboard (2026-06-01):** 67.5% name-match accuracy; failures cluster on heuristic NL search cases where the simulated model uses a weak default query.
+
+### 5.4 Logging
+
+Structured JSON events via `src/telemetry/logger.py` → `logs/YYYY-MM-DD.log` (created at runtime). Event types include `CHATBOT_START`, `AGENT_TOOL_OBSERVATION`, `AGENT_TOOL_ERROR`, `AGENT_IMAGE_GUARD`.
+
+---
+
+## 6. Trace Quality & Failure Analysis
+
+### 6.1 Four-mode contrast — Scenario 1 (hallucination trap)
+
+**Query:** *What is the price and stock of the Samsung Galaxy S24 in our catalog?*
+
+| Mode | Typical behavior |
+| :--- | :--- |
+| Baseline | Invents price/stock (e.g. $999, 15 units) |
+| Tool-aware | May show fake `Observation:` without DB call |
+| Agent v1/v2 | `search_products` → empty → optional SQL → **not in catalog** |
+
+**Agent v2 (representative trace):**
+
 ```text
-User: Give me the title, price, and brand for product id 7.
-
-Thought: The user wants the title, price, and brand of a specific product using its numeric ID (7). I should use the `get_product_by_id` tool.
-Action: get_product_by_id({"product_id": 7})
-
-Observation: 1. **Chanel Coco Noir Eau De Parfum**
-- Price: $129.99
-- Category: fragrances
-- Rating: 2.76 | Stock: 41
-
-Thought: I have the product details. Chanel Coco Noir Eau De Parfum, priced at $129.99, brand is Chanel (extracted from title/category context). I will now answer the user.
-Final Answer: Product ID 7 is **Chanel Coco Noir Eau De Parfum** by Chanel. It is priced at $129.99.
+Action: search_products({"query": "Samsung Galaxy S24"})
+Observation: No matching products found.
+Action: query_products_sql({"sql": "SELECT title, price, stock FROM products WHERE title LIKE '%Samsung%'"})
+Observation: No matching products found.
+Final Answer: The Samsung Galaxy S24 is not in our current catalog.
 ```
-*Analysis: Extremely efficient 1-step resolution. Zero hallucinated parameters.*
 
----
+### 6.2 Successful trace — Scenario 2 (cheapest beauty)
 
-#### Case 2: Aggregate Lookup & Math (Scenario 2)
+**Query:** *What is the cheapest product in the beauty category and how many units are in stock?*
+
 ```text
-User: What is the cheapest product in the beauty category and how many units are in stock?
-
-Thought: I need to find the cheapest product in the "beauty" category and its stock. The tool `cheapest_in_category` handles this directly.
+Thought: I need the minimum-price beauty item and its stock from the database.
 Action: cheapest_in_category({"category": "beauty"})
 
-Observation: 1. **Essence Mascara Lash Princess**
-- Price: $9.99
+Observation: 1. **Red Nail Polish**
+- Price: $8.99
 - Category: beauty
-- Rating: 4.94 | Stock: 5
+- Rating: … | Stock: 79
+![Red Nail Polish](https://cdn.dummyjson.com/product-images/beauty/red-nail-polish/thumbnail.webp)
 
-Thought: The cheapest product in the beauty category is "Essence Mascara Lash Princess" which costs $9.99 and has 5 units in stock. I have all the information.
-Final Answer: The cheapest product in the beauty category is **Essence Mascara Lash Princess**. It costs $9.99 and there are currently 5 units in stock.
+Final Answer: The cheapest beauty product is **Red Nail Polish** at **$8.99** with **79** units in stock.
 ```
-*Analysis: Offloading the "cheapest" math logic to SQLite ensured that the agent did not have to read a huge inventory of beauty products, keeping prompt tokens small and calculation accuracy perfect.*
 
----
+*v2 appends thumbnail markdown if the model omits images (`MISSING_IMAGES_IN_ANSWER`).*
 
-#### Case 3: SQL-based Search & Tag Comparison (Scenario 4)
+### 6.3 Successful trace — Scenario 3 (product id 7)
+
 ```text
-User: Find mascara products and tell me which one has the lowest price.
-
-Thought: I need to find mascara products and compare their prices to find the lowest one. I can use the SQL tool to filter by "mascara" and sort by price ascending.
-Action: query_products_sql({"sql": "SELECT title, price FROM products WHERE category = 'beauty' AND title LIKE '%mascara%' ORDER BY price ASC LIMIT 5"})
-
-Observation: 1. **Essence Mascara Lash Princess**
-- Price: $9.99
-- Category: beauty
-- Rating: 4.94 | Stock: 5
-
-Thought: The SQL query directly sorted and returned "Essence Mascara Lash Princess" as the cheapest mascara product at $9.99. I can now provide the final answer.
-Final Answer: The mascara product with the lowest price is **Essence Mascara Lash Princess**, priced at $9.99.
+Action: get_product_by_id({"product_id": 7})
+Observation: **Chanel Coco Noir Eau De Parfum** — $129.99, fragrances, stock 41
+Final Answer: Product ID 7 is **Chanel Coco Noir Eau De Parfum**, priced at $129.99.
 ```
-*Analysis: Utilizing `query_products_sql` allowed complex filtering and ordering in a single step, saving token usage and agent latency.*
+
+### 6.4 RCA — Category argument bug (real failure we fixed)
+
+**Symptom:** `cheapest_in_category({"category": "beauty"})` → *No matching products found* despite a full cache.
+
+**Cause:** Category was parsed as the string `"{'category': 'beauty'}"` instead of `beauty`.
+
+**Fix:** `_parse_category()` + parameterized SQL. v2 also clears `seen_actions` after `refresh_products` so a valid retry is not blocked as `DUPLICATE_ACTION`.
+
+### 6.5 RCA — SQL schema hallucination
+
+**Input:** *Find a garment for woman that looks young*
+
+```text
+Action: query_products_sql({"sql": "... AND looks_young = 1"})
+Observation: Tool failed: no such column: looks_young
+Action: search_products({"query": "looks young garment for woman"})
+Observation: **Pink Summer Dress** — $39.99, …
+```
+
+**Lesson:** Document allowed columns in `query_products_sql`; on `TOOL_ERROR`, switch to heuristic `search_products`.
+
+### 6.6 RCA — Tool-aware fake observation
+
+Tool-aware mode may output:
+
+```text
+Action: cheapest_in_category({"category": "beauty"})
+Observation: Essence Mascara, $9.99, stock 5
+```
+
+…with **no tool execution** (`used_tools: false`). This is intentional for the lab: it shows why ReAct must **execute** tools, not only describe them.
 
 ---
 
-### 4.2 Root Cause Analysis (RCA) - Failure Traces
+## 7. Ablation & Comparison Experiments
 
-#### Case 1: Hallucination Trap (Samsung Galaxy S24)
-- **Input**: *"What is the price and stock of the Samsung Galaxy S24 in our catalog?"*
-- **Trace**:
-  ```text
-  Thought: The user is asking for the price and stock of the Samsung Galaxy S24. I should search for this product in the catalog.
-  Action: search_products({"query": "Samsung Galaxy S24"})
-  
-  Observation: No matching products found.
-  
-  Thought: The search returned no products. I should double check using an SQL query to see if there is any Samsung product in the database.
-  Action: query_products_sql({"sql": "SELECT title, price, stock FROM products WHERE title LIKE '%Samsung%'"})
-  
-  Observation: No matching products found.
-  
-  Thought: Both natural language search and direct SQL queries confirm that the Samsung Galaxy S24 (and any Samsung product) is not in our catalog database. I must report this factually.
-  Final Answer: I am sorry, but the Samsung Galaxy S24 is not available in our current catalog. We do not have any Samsung products in stock at this time.
-  ```
-- **RCA / Outcome**: This is a **successful handling of a hallucination trap**. The baseline chatbot hallucinated a price ($999) and stock count (15) to satisfy the prompt. The ReAct Agent successfully grounded its reasoning in the tool results, acknowledging the database limitation honestly.
+### 7.1 Four-mode summary (Scenarios 1–4)
 
----
+| Scenario | Baseline | Tool-aware | Agent v1 | Agent v2 |
+| :--- | :--- | :--- | :--- | :--- |
+| 1 Hallucination trap | Often hallucinates | Fake tool narrative | Grounded “not found” | + `failures[]` if tools misused |
+| 2 Cheapest beauty | Guesses | Fake observation | DB-grounded price/stock | + images enforced |
+| 3 Product id 7 | Wrong price common | May guess | Correct via `get_product_by_id` | Same + guards |
+| 4 Mascara compare | Invents list | Invents comparison | Search/SQL loop | Recovery hints on empty SQL |
 
-#### Case 2: SQLite Operational Error (Schema Hallucination)
-- **Input**: *"Find a garment for woman that looks young"*
-- **Trace**:
-  ```text
-  Thought: The user is looking for a young-looking garment for a woman. I should run an SQL query on the products table.
-  Action: query_products_sql({"sql": "SELECT * FROM products WHERE category = 'womens-dresses' AND looks_young = 1"})
-  
-  Observation: Tool query_products_sql failed: no such column: looks_young
-  
-  Thought: The database failed because there is no column named 'looks_young'. I should use the natural language search tool instead, which has heuristics to handle descriptions like "looks young" and "garment for woman".
-  Action: search_products({"query": "looks young garment for woman"})
-  
-  Observation: 1. **Pink Summer Dress**
-  - Price: $39.99
-  - Category: womens-dresses
-  - Rating: 4.8 | Stock: 20
-  
-  Thought: The search tool correctly found the Pink Summer Dress using heuristic matching. I will formulate my final answer.
-  Final Answer: I found the **Pink Summer Dress** which fits your criteria! It is in the womens-dresses category, priced at $39.99, and has a rating of 4.8.
-  ```
-- **RCA / Diagnosis**: The LLM hallucinated the SQLite schema by assuming a column named `looks_young` existed based on the user's adjective. 
-- **Solution / Resolution**: 
-  1. We added strict lists of allowed database column names (`id, title, description, category, price, rating, stock, brand, thumbnail, images, tags`) in the description of `query_products_sql` tool.
-  2. We configured the ReAct loop to fail gracefully. When the SQL execution threw an error, the agent caught it and dynamically switched back to the robust `search_products` tool.
+### 7.2 Token & cost (simulate, Scenario 2 — illustrative)
+
+Web UI and `demo_compare.py --simulate` show **relative** cost: baseline ≈ 1 LLM call; agents ≈ 2+ calls with higher tokens but factual answers. Exact numbers depend on provider; see per-run `metrics` in API responses.
+
+### 7.3 Prompt / parser improvements
+
+- Few-shot `Action: tool_name({"key": "value"})` in agent system prompts  
+- `_parse_args` accepts JSON, Python kwargs, or raw strings  
+- v2 `GUARD:` observations after `PARSE_ERROR`, `HALLUCINATED_TOOL`, `EMPTY_RESULT`
 
 ---
 
-#### Case 3: Action Parsing Error (JSON formatting constraint)
-- **Input**: *"Show cheap beauty products"*
-- **Trace**:
-  ```text
-  Thought: The user is looking for cheap beauty products. I should run search_products with cheap query.
-  Action: search_products(query="cheap beauty", limit=5)
-  ```
-- **RCA / Diagnosis**: The system failed to execute a tool. The ReAct parser `_parse_action` failed because the LLM did not write a valid JSON string payload inside the parentheses `search_products(query="cheap beauty", limit=5)` but instead wrote Python-style keyword arguments. The regex expected JSON syntax: `search_products({"query": "cheap beauty"})`.
-- **Solution / Resolution**:
-  1. We refined the system prompt instruction template to give a precise few-shot example: `Action: tool_name({"query": "value"})`.
-  2. We updated the parser `_parse_args` to accept Python-style kwargs or raw strings and convert them to robust parameters under the hood, ensuring the agent did not crash on minor syntax deviations.
+## 8. Production Readiness (honest assessment)
+
+| Area | Current state | Next step |
+| :--- | :--- | :--- |
+| **Grounding** | Strong when tools run correctly | Supervisor check: prices must appear in observations |
+| **Security** | Read-only SQL filter | Parameterized queries / ORM instead of LLM-written SQL |
+| **Cost control** | `max_steps`, metrics per run | Per-user budgets; cache hot queries (Redis) |
+| **Failure detection** | Rule-based codes in v2 | Not a learned hallucination detector — document as guardrails |
+| **Memory** | `history` on agent is not yet fed into multi-turn CLI | Wire conversation context for follow-ups |
+| **Evaluation** | 40-case suite = agent v1 only | Extend benchmark to score all four modes on same cases |
 
 ---
 
-## 5. Ablation Studies & Experiments
+## 9. Repository Map (submission snapshot)
 
-### Experiment 1: Prompt v1 (Basic) vs Prompt v2 (Structured with Column Constrains)
-- **Diff**: In Prompt v2, we added explicit schemas, concrete few-shot JSON formatting examples, and instructions forbidding database schema assumptions.
-- **Result**: Reduced SQL operational errors by **85%** and eliminated Action formatting parsing crashes.
-
-### Experiment 2: Chatbot vs ReAct Agent Comparison
-
-| Test Query | Chatbot Baseline | ReAct Agent | Winner |
-| :--- | :--- | :--- | :--- |
-| **"What is the price of product id 7?"** | Hallucinated ($15.99) | Correctly returned $129.99 via `get_product_by_id` | **Agent** |
-| **"What is the cheapest beauty item?"** | Guessed random mascara | Deterministically retrieved **Essence Mascara** ($9.99) | **Agent** |
-| **"Do you have the iPhone 16?"** | Claimed yes, price $1099 | Checked catalog, reported "not in stock" | **Agent** |
-| **"Hello, who are you?"** | Friendly assistant greeting | Friendly assistant greeting | **Draw** |
-
----
-
-## 6. Production Readiness Review
-
-Before deploying this agent to an enterprise production environment, the following controls should be enforced:
-
-1. **Security & SQL Injection Prevention**:
-   - The SQL tool should remain read-only.
-   - Transition to parameter binding or an ORM (like SQLAlchemy) rather than sending raw text query strings composed by an LLM to prevent sophisticated prompt-based SQL injection exploits.
-2. **Loop Guardrails**:
-   - Enforce a strict cost and step ceiling (`max_steps = 5` and a timeout). If an agent enters an infinite loop, terminate it with a clean error response to protect against high API charges.
-3. **Caching & Scaling**:
-   - Use Redis to cache frequent database query results.
-   - For multi-turn complex flows, migrate from basic ReAct loops to structured state machine engines (e.g., **LangGraph** or **LlamaIndex Workflows**) to control routing states cleanly and improve trace reliability.
+```
+src/chatbot/          baseline.py, tool_aware.py
+src/agent/            agent.py (v1), agent_v2.py (v2)
+src/tools/            product_tools.py (SQLite catalog)
+src/telemetry/        metrics.py, logger.py, evaluation.py
+src/demo/             scenarios.py, mock_metrics.py
+web/                  index.html, app.js, styles.css, mock_traces.json
+web_demo.py           Flask 4-mode API
+demo_compare.py       CLI compare
+run_evaluation.py     40-case benchmark
+report/
+  EVALUATION_DASHBOARD.md
+  group_report/GROUP_REPORT_TeamA2.md
+  individual_reports/REPORT_Minh.md (and teammates TBD)
+```
 
 ---
 
-> [!NOTE]
-> Submitted by Team A2 on the `minhh` branch. All code implementations, evaluation tests, and telemetry structures have been successfully integrated and verified.
+> **Submitted by Team A2** on branch `minhh`.  
+> Compare all four modes in the web UI or `demo_compare.py`; regenerate metrics with `run_evaluation.py`.  
+> Individual accountability: each member submits `report/individual_reports/REPORT_[Name].md` per course template.
