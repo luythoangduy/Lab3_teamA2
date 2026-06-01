@@ -15,7 +15,7 @@ class LLMProvider(ABC):
     @abstractmethod
     def generate(self, prompt: str, system_prompt: Optional[str] = None) -> Dict[str, Any]:
         """
-        Produce a non-streaming completion.
+        Produce a non-streaming completion..
         Returns:
             Dict containing:
             - content: The response text

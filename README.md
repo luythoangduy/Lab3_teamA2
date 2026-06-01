@@ -16,7 +16,27 @@ pip install -r requirements.txt
 ```
 
 ### 3. Directory Structure
-- `src/tools/`: Extension point for your custom tools.
+- `src/tools/`: Product catalog tools (dummyjson.com).
+- `src/chatbot/`: Baseline + tool-aware chatbot (no real tool execution).
+- `src/agent/`: ReAct agent with Thought-Action-Observation loop.
+- `demo_compare.py`: Run chatbot vs agent scenarios side-by-side.
+
+### 4. Quick Demo (Product Catalog)
+
+**Web UI (recommended for presentation):**
+```bash
+pip install -r requirements.txt
+python web_demo.py
+# Open http://127.0.0.1:5000 — Simulate mode works without API keys
+python web_demo.py --live   # uses real LLM from .env
+```
+
+**Terminal:**
+```bash
+python demo_compare.py --refresh-cache   # optional: cache 30 products offline
+python demo_compare.py                   # runs 4 scenarios (hallucination, multi-step, ...)
+python demo_compare.py --scenario 1      # single scenario
+```
 
 ## 🏠 Running with Local Models (CPU)
 
@@ -52,5 +72,30 @@ The code is designed as a **Production Prototype**. It includes:
 - **Clean Skeletons**: Focus on the logic that matters—the agent's reasoning process.
 
 ---
+
+## Product Shopping Agent
+
+This branch includes a retail product agent powered by the public DummyJSON Products API:
+
+- Chat naturally with the user.
+- Fetch product data from `https://dummyjson.com/products`.
+- Store the catalog in local SQLite at `data/products.sqlite3`.
+- Use read-only SQL for product queries.
+- Map heuristic requests like `looks young` to bright colors and `garment for woman` to women's fashion terms.
+- Return at most 5 products with Markdown images inside the chat response.
+
+Run it:
+
+```bash
+python -m src.product_chat
+```
+
+Example prompts:
+
+```text
+Show me garment for woman that looks young
+Select all products in womens-dresses
+Find cheap beauty products and show images
+```
 
 *Happy Coding! Let's build agents that actually work.*
