@@ -148,7 +148,53 @@ class ProductCatalog:
         return "\n\n".join(blocks)
 
     def search_markdown(self, user_query: str, limit: int = 5) -> str:
-        return self.format_products_markdown(self.search_products(user_query, limit), limit)
+        products = self.search_products(user_query, limit)
+        if products:
+            return self.format_products_markdown(products, limit)
+        return self.relaxed_search_markdown(user_query, limit)
+
+    def relaxed_search_products(self, user_query: str, limit: int = 5) -> tuple[List[Dict[str, Any]], List[str]]:
+        self.ensure_loaded()
+        limit = self._safe_limit(limit)
+        candidates = self._relaxed_queries(user_query)
+        seen_ids = set()
+        results: List[Dict[str, Any]] = []
+        used_queries: List[str] = []
+
+        for query in candidates:
+            matches = self.search_products(query, limit)
+            if matches:
+                used_queries.append(query)
+            for product in matches:
+                product_id = product.get("id")
+                if product_id in seen_ids:
+                    continue
+                seen_ids.add(product_id)
+                results.append(product)
+                if len(results) >= limit:
+                    return results, used_queries
+
+        if not results:
+            with self._connect() as conn:
+                results = [
+                    dict(row)
+                    for row in conn.execute(
+                        "SELECT * FROM products ORDER BY rating DESC, stock DESC LIMIT ?",
+                        (limit,),
+                    ).fetchall()
+                ]
+            used_queries.append("top rated products")
+        return results, used_queries
+
+    def relaxed_search_markdown(self, user_query: str, limit: int = 5) -> str:
+        products, used_queries = self.relaxed_search_products(user_query, limit)
+        query_note = ", ".join([f"`{query}`" for query in used_queries[:3]])
+        prefix = (
+            f"I could not find an exact match for `{user_query}`. "
+            f"I broadened the search using related query terms: {query_note}.\n\n"
+            "Closest related products:\n\n"
+        )
+        return prefix + self.format_products_markdown(products, limit)
 
     def sql_markdown(self, sql: str, limit: int = 5) -> str:
         return self.format_products_markdown(self.query_sql(sql, limit), limit)
@@ -250,6 +296,46 @@ class ProductCatalog:
                 unique_terms.append(term)
         return unique_terms[:12]
 
+    @classmethod
+    def _relaxed_queries(cls, user_query: str) -> List[str]:
+        text = user_query.lower()
+        raw_terms = re.findall(r"[a-z0-9]+", text)
+        terms = cls._heuristic_terms(user_query)
+        synonym_map = {
+            "furnitures": ["furniture", "chair", "sofa", "table"],
+            "furniture": ["furniture", "chair", "sofa", "table"],
+            "garments": ["clothing", "dress", "shirt", "top"],
+            "garment": ["clothing", "dress", "shirt", "top"],
+            "clothes": ["clothing", "dress", "shirt", "top"],
+            "woman": ["women", "womens", "dress", "beauty"],
+            "women": ["women", "womens", "dress", "beauty"],
+            "man": ["men", "mens", "shirt", "shoe"],
+            "men": ["men", "mens", "shirt", "shoe"],
+            "cheap": ["discount", "low price", "budget"],
+            "young": ["bright", "pink", "red", "dress", "beauty"],
+            "phone": ["smartphone", "mobile"],
+            "phones": ["smartphone", "mobile"],
+        }
+
+        queries = []
+        for term in raw_terms + terms:
+            if term in synonym_map:
+                queries.extend(synonym_map[term])
+            elif len(term) > 3 and term.endswith("s"):
+                queries.append(term[:-1])
+            else:
+                queries.append(term)
+
+        if not queries:
+            queries.extend(["beauty", "furniture", "groceries", "fragrances"])
+
+        unique_queries = []
+        for query in queries:
+            cleaned = query.strip()
+            if cleaned and cleaned not in unique_queries:
+                unique_queries.append(cleaned)
+        return unique_queries[:10]
+
 
 CATALOG = ProductCatalog()
 
@@ -262,6 +348,11 @@ def refresh_cache(limit: int = 100) -> str:
 def search_products(args: str) -> str:
     query, limit = _parse_query_and_limit(args)
     return CATALOG.search_markdown(query, limit)
+
+
+def relaxed_search_products(args: str) -> str:
+    query, limit = _parse_query_and_limit(args)
+    return CATALOG.relaxed_search_markdown(query, limit)
 
 
 def query_products_sql(args: str) -> str:
@@ -347,6 +438,10 @@ def create_product_tools(catalog: Optional[ProductCatalog] = None) -> List[Dict[
             limit = 5
         return active_catalog.sql_markdown(sql, limit)
 
+    def relaxed_search_products_tool(args: str) -> str:
+        query, limit = _parse_query_and_limit(args)
+        return active_catalog.relaxed_search_markdown(query, limit)
+
     def get_product_by_id_tool(args: str) -> str:
         return get_product_by_id(args)
 
@@ -370,6 +465,14 @@ def create_product_tools(catalog: Optional[ProductCatalog] = None) -> List[Dict[
                 "Returns at most 5 products with Markdown images."
             ),
             "function": search_products_tool,
+        },
+        {
+            "name": "relaxed_search_products",
+            "description": (
+                "Use when exact product search returns no results. "
+                "Broadens or rewrites the query, then clearly explains that returned products are related alternatives."
+            ),
+            "function": relaxed_search_products_tool,
         },
         {
             "name": "query_products_sql",
@@ -400,6 +503,7 @@ def create_product_tools(catalog: Optional[ProductCatalog] = None) -> List[Dict[
 _TOOL_FUNCS: Dict[str, Callable[[str], str]] = {
     "refresh_products": lambda args: refresh_cache(),
     "search_products": search_products,
+    "relaxed_search_products": relaxed_search_products,
     "query_products_sql": query_products_sql,
     "list_by_category": list_by_category,
     "get_product_by_id": get_product_by_id,
@@ -416,6 +520,14 @@ PRODUCT_TOOLS: List[Dict[str, Any]] = [
         "name": "search_products",
         "description": "Search products with natural language and heuristics; returns at most 5 Markdown image results.",
         "function": _TOOL_FUNCS["search_products"],
+    },
+    {
+        "name": "relaxed_search_products",
+        "description": (
+            "Fallback search when exact search finds nothing; rewrites/broadens the query "
+            "and clearly labels related alternatives."
+        ),
+        "function": _TOOL_FUNCS["relaxed_search_products"],
     },
     {
         "name": "query_products_sql",

@@ -78,3 +78,14 @@ def test_sql_tool_blocks_write_queries(tmp_path):
 
     with pytest.raises(ValueError, match="Only SELECT"):
         catalog.query_sql("DELETE FROM products")
+
+
+def test_relaxed_search_clarifies_related_results(tmp_path):
+    catalog = ProductCatalog(db_path=tmp_path / "products.sqlite3")
+    seed_products(catalog)
+
+    output = catalog.relaxed_search_markdown("furnitures", limit=5)
+
+    assert "could not find an exact match" in output
+    assert "broadened the search" in output
+    assert "Black Office Chair" in output
