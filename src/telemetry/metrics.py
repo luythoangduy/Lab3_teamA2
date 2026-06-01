@@ -27,10 +27,34 @@ class PerformanceTracker:
 
     def _calculate_cost(self, model: str, usage: Dict[str, int]) -> float:
         """
-        TODO: Implement real pricing logic.
-        For now, returns a dummy constant.
+        Calculates real API costs based on model pricing per 1M tokens.
+        - gpt-4o-mini: Input $0.15/1M, Output $0.60/1M
+        - gpt-4o: Input $2.50/1M, Output $10.00/1M
+        - gemini-1.5-flash: Input $0.075/1M, Output $0.30/1M
+        - local/others: free or default basic pricing
         """
-        return (usage.get("total_tokens", 0) / 1000) * 0.01
+        model_lower = model.lower()
+        prompt_tokens = usage.get("prompt_tokens", 0)
+        completion_tokens = usage.get("completion_tokens", 0)
+
+        if "gpt-4o-mini" in model_lower:
+            input_cost = (prompt_tokens / 1_000_000) * 0.15
+            output_cost = (completion_tokens / 1_000_000) * 0.60
+        elif "gpt-4o" in model_lower:
+            input_cost = (prompt_tokens / 1_000_000) * 2.50
+            output_cost = (completion_tokens / 1_000_000) * 10.00
+        elif "gemini" in model_lower or "google" in model_lower:
+            input_cost = (prompt_tokens / 1_000_000) * 0.075
+            output_cost = (completion_tokens / 1_000_000) * 0.30
+        elif "local" in model_lower:
+            return 0.0
+        else:
+            # Default fallback pricing (similar to gpt-4o-mini)
+            input_cost = (prompt_tokens / 1_000_000) * 0.15
+            output_cost = (completion_tokens / 1_000_000) * 0.60
+
+        return input_cost + output_cost
 
 # Global tracker instance
 tracker = PerformanceTracker()
+
